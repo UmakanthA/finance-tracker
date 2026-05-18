@@ -1465,11 +1465,19 @@ const DRIVE_CONFIG = {
 
 let driveAccessToken = null;
 let driveTokenClient = null;
+let driveInitRetries = 0;
 
 function initDriveSync() {
   // I am checking if the Google Identity Services library loaded
   if (typeof google === 'undefined' || !google.accounts) {
-    console.warn('Google Identity Services not loaded — Drive sync unavailable');
+    // I am retrying up to 20 times (10 seconds total) waiting for the async script
+    if (driveInitRetries < 20) {
+      driveInitRetries++;
+      updateDriveStatus('offline', 'Drive: loading…');
+      setTimeout(initDriveSync, 500);
+      return;
+    }
+    console.warn('Google Identity Services not loaded after retries — Drive sync unavailable');
     updateDriveStatus('offline', 'Drive: unavailable');
     return;
   }
