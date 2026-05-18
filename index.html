@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   :root {
@@ -58,6 +59,15 @@
   button.tool.danger:hover { background: var(--bad); color: var(--paper); }
   button.tool.primary { background: var(--ink); color: var(--paper); }
   button.tool.primary:hover { background: var(--accent); border-color: var(--accent); }
+  button.tool.drive { border-color: #4285f4; color: #4285f4; }
+  button.tool.drive:hover { background: #4285f4; color: #fff; }
+  button.tool.drive:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.tool.drive:disabled:hover { background: transparent; color: #4285f4; }
+  .drive-status { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .drive-status .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .drive-status .dot.connected { background: var(--good); }
+  .drive-status .dot.syncing { background: var(--warn); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
   .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 32px; border-top: 1px solid var(--rule-strong); border-bottom: 1px solid var(--rule-strong); }
   .summary-cell { padding: 18px 16px; border-right: 0.5px solid var(--rule); }
@@ -271,12 +281,17 @@
       <span class="save-status" id="save-status"></span>
     </div>
     <div class="toolbar">
+      <button class="tool drive" id="drive-save-btn" disabled>Save to Drive</button>
+      <button class="tool drive" id="drive-load-btn" disabled>Load from Drive</button>
       <button class="tool" id="export-btn">Export</button>
       <button class="tool" id="import-btn">Import</button>
       <button class="tool" id="print-btn">Print</button>
       <button class="tool danger" id="reset-btn">Reset</button>
     </div>
     <input type="file" id="import-file" accept="application/json" style="display:none" />
+    <div style="width: 100%; display: flex; justify-content: flex-end; margin-top: -8px;">
+      <div class="drive-status" id="drive-status"><span class="dot"></span> <span id="drive-status-text">Drive: not connected</span></div>
+    </div>
   </div>
 
   <div class="view active" id="view-monthly">
@@ -343,7 +358,7 @@
     <div id="goals-list" class="card-grid"></div>
   </div>
 
-  <div class="footer-note">Data lives only in your browser · No accounts · No tracking · Export to back up</div>
+  <div class="footer-note">Data lives in your browser · Sync to Google Drive for backup · No tracking</div>
 </div>
 
 <!-- WELCOME / SETUP MODAL -->
@@ -1434,6 +1449,239 @@ document.querySelectorAll('.preset-card').forEach(c => c.addEventListener('click
 }));
 
 // =====================================================
+// GOOGLE DRIVE SYNC
+// =====================================================
+const DRIVE_CONFIG = {
+  // ⚠️ REPLACE THIS with your Google Cloud OAuth Client ID
+  // Get one at: https://console.cloud.google.com/apis/credentials
+  // 1. Create project → Enable Google Drive API
+  // 2. Create OAuth 2.0 Client ID (Web application)
+  // 3. Add https://umakantha.github.io as authorized JS origin
+  CLIENT_ID: '594005284897-j7gt13v904val1g2jjbc4doh3ostev69.apps.googleusercontent.com',
+  SCOPES: 'https://www.googleapis.com/auth/drive.file',
+  BACKUP_FILENAME: 'reckoning-backup.json',
+  BACKUP_MIME: 'application/json',
+};
+
+let driveAccessToken = null;
+let driveTokenClient = null;
+
+function initDriveSync() {
+  // I am checking if the Google Identity Services library loaded
+  if (typeof google === 'undefined' || !google.accounts) {
+    console.warn('Google Identity Services not loaded — Drive sync unavailable');
+    updateDriveStatus('offline', 'Drive: unavailable');
+    return;
+  }
+
+  if (DRIVE_CONFIG.CLIENT_ID === 'YOUR_CLIENT_ID_HERE') {
+    updateDriveStatus('offline', 'Drive: no Client ID set');
+    return;
+  }
+
+  // I am initializing the OAuth2 token client
+  driveTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: DRIVE_CONFIG.CLIENT_ID,
+    scope: DRIVE_CONFIG.SCOPES,
+    callback: (tokenResponse) => {
+      if (tokenResponse.error) {
+        console.error('Drive auth error:', tokenResponse);
+        updateDriveStatus('offline', 'Drive: auth failed');
+        return;
+      }
+      driveAccessToken = tokenResponse.access_token;
+      updateDriveStatus('connected', 'Drive: connected');
+      $('drive-save-btn').disabled = false;
+      $('drive-load-btn').disabled = false;
+
+      // I am executing the pending action if there was one
+      if (pendingDriveAction === 'save') { driveSave(); }
+      else if (pendingDriveAction === 'load') { driveLoad(); }
+      pendingDriveAction = null;
+    },
+  });
+
+  // I am enabling the buttons so users can click to authenticate
+  $('drive-save-btn').disabled = false;
+  $('drive-load-btn').disabled = false;
+  updateDriveStatus('offline', 'Drive: click to connect');
+}
+
+let pendingDriveAction = null;
+
+function ensureDriveAuth(action) {
+  if (driveAccessToken) {
+    // I am checking if the token is still valid
+    return fetch('https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=' + driveAccessToken)
+      .then(r => {
+        if (r.ok) return true;
+        driveAccessToken = null;
+        updateDriveStatus('offline', 'Drive: reconnecting…');
+        pendingDriveAction = action;
+        driveTokenClient.requestAccessToken();
+        return false;
+      });
+  }
+  pendingDriveAction = action;
+  driveTokenClient.requestAccessToken();
+  return Promise.resolve(false);
+}
+
+function updateDriveStatus(state, text) {
+  const dot = document.querySelector('#drive-status .dot');
+  const label = $('drive-status-text');
+  dot.className = 'dot' + (state === 'connected' ? ' connected' : state === 'syncing' ? ' syncing' : '');
+  label.textContent = text;
+}
+
+// I am building the same export blob that the Export button creates
+function buildBackupData() {
+  // I am saving current month data first so it's up to date
+  saveMonthData();
+  const allData = { months: {}, debts, goals, categories: CATS, exportedAt: new Date().toISOString(), version: 2 };
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(KEYS.monthPrefix)) {
+      try { allData.months[k.replace(KEYS.monthPrefix, '')] = JSON.parse(localStorage.getItem(k)); } catch (e) {}
+    }
+  }
+  return allData;
+}
+
+// I am searching for an existing backup file in Drive
+async function findBackupFile() {
+  const query = encodeURIComponent(`name='${DRIVE_CONFIG.BACKUP_FILENAME}' and mimeType='${DRIVE_CONFIG.BACKUP_MIME}' and trashed=false`);
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&spaces=drive&fields=files(id,name,modifiedTime)`, {
+    headers: { 'Authorization': 'Bearer ' + driveAccessToken },
+  });
+  if (!res.ok) throw new Error('Failed to search Drive: ' + res.status);
+  const data = await res.json();
+  return data.files && data.files.length > 0 ? data.files[0] : null;
+}
+
+// I am saving the backup to Google Drive
+async function driveSave() {
+  updateDriveStatus('syncing', 'Drive: saving…');
+  $('drive-save-btn').disabled = true;
+
+  try {
+    const backupData = buildBackupData();
+    const jsonStr = JSON.stringify(backupData, null, 2);
+    const existingFile = await findBackupFile();
+
+    if (existingFile) {
+      // I am updating the existing file
+      const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${existingFile.id}?uploadType=media`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': 'Bearer ' + driveAccessToken,
+          'Content-Type': DRIVE_CONFIG.BACKUP_MIME,
+        },
+        body: jsonStr,
+      });
+      if (!res.ok) throw new Error('Failed to update file: ' + res.status);
+    } else {
+      // I am creating a new file with multipart upload
+      const metadata = { name: DRIVE_CONFIG.BACKUP_FILENAME, mimeType: DRIVE_CONFIG.BACKUP_MIME };
+      const boundary = 'reckoning_boundary_' + Date.now();
+      const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${DRIVE_CONFIG.BACKUP_MIME}\r\n\r\n${jsonStr}\r\n--${boundary}--`;
+
+      const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + driveAccessToken,
+          'Content-Type': `multipart/related; boundary=${boundary}`,
+        },
+        body,
+      });
+      if (!res.ok) throw new Error('Failed to create file: ' + res.status);
+    }
+
+    updateDriveStatus('connected', 'Drive: saved ✓');
+    flashSaved();
+  } catch (err) {
+    console.error('Drive save error:', err);
+    updateDriveStatus('connected', 'Drive: save failed');
+    alert('Could not save to Google Drive. Check the console for details.');
+  } finally {
+    $('drive-save-btn').disabled = false;
+  }
+}
+
+// I am loading the backup from Google Drive
+async function driveLoad() {
+  updateDriveStatus('syncing', 'Drive: loading…');
+  $('drive-load-btn').disabled = true;
+
+  try {
+    const existingFile = await findBackupFile();
+    if (!existingFile) {
+      updateDriveStatus('connected', 'Drive: connected');
+      alert('No Reckoning backup found in your Google Drive. Save one first.');
+      $('drive-load-btn').disabled = false;
+      return;
+    }
+
+    // I am downloading the file content
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${existingFile.id}?alt=media`, {
+      headers: { 'Authorization': 'Bearer ' + driveAccessToken },
+    });
+    if (!res.ok) throw new Error('Failed to download: ' + res.status);
+    const data = await res.json();
+
+    const lastSaved = existingFile.modifiedTime
+      ? new Date(existingFile.modifiedTime).toLocaleString()
+      : 'unknown';
+
+    if (!confirm(`Load backup from Google Drive?\nLast saved: ${lastSaved}\n\nThis will replace your current data.`)) {
+      updateDriveStatus('connected', 'Drive: connected');
+      $('drive-load-btn').disabled = false;
+      return;
+    }
+
+    // I am restoring data the same way the Import button does
+    if (data.categories) {
+      CATS = data.categories;
+      localStorage.setItem(KEYS.categories, JSON.stringify(CATS));
+      localStorage.setItem(KEYS.setupDone, '1');
+    }
+    if (data.months) {
+      Object.keys(data.months).forEach(m =>
+        localStorage.setItem(KEYS.monthPrefix + m, JSON.stringify(data.months[m]))
+      );
+    }
+    if (data.debts) {
+      debts = data.debts;
+      localStorage.setItem(KEYS.debts, JSON.stringify(debts));
+    }
+    if (data.goals) {
+      goals = data.goals;
+      localStorage.setItem(KEYS.goals, JSON.stringify(goals));
+    }
+
+    updateDriveStatus('connected', 'Drive: loaded ✓');
+    alert('Loaded from Google Drive. Reloading…');
+    location.reload();
+  } catch (err) {
+    console.error('Drive load error:', err);
+    updateDriveStatus('connected', 'Drive: load failed');
+    alert('Could not load from Google Drive. Check the console for details.');
+  } finally {
+    $('drive-load-btn').disabled = false;
+  }
+}
+
+// I am binding the Drive button click handlers
+$('drive-save-btn').addEventListener('click', async () => {
+  const authed = await ensureDriveAuth('save');
+  if (authed) driveSave();
+});
+$('drive-load-btn').addEventListener('click', async () => {
+  const authed = await ensureDriveAuth('load');
+  if (authed) driveLoad();
+});
+
+// =====================================================
 // INIT
 // =====================================================
 function init() {
@@ -1448,6 +1696,8 @@ function init() {
   rebuildQuickAddSelect();
   loadMonthData();
   updateCounts();
+  // I am initializing Drive sync after the rest of the app is ready
+  initDriveSync();
 }
 init();
 </script>
