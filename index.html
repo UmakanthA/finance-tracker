@@ -392,13 +392,20 @@
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px;">
       <h2 style="font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 26px;">What can I spend?</h2>
     </div>
-    <p class="cat-meta" style="margin: 0 0 16px;">Income minus fixed costs, debt payments, and savings — the real leftover for eating out, trips, and everything else.</p>
+    <p class="cat-meta" style="margin: 0 0 16px;">Income minus fixed costs and debt minimums leaves a pool each month. Decide here how to split it — spending, goals, and extra debt payments — and it updates the rest of the app automatically.</p>
 
     <div class="quick-add" id="disc-inputs-card">
       <div class="modal-field-row" style="margin-top: 0;">
         <div class="modal-field"><label>Net monthly income</label><input type="number" id="disc-income" step="1" placeholder="0" /></div>
-        <div class="modal-field"><label>Extra toward debt (beyond minimums)</label><input type="number" id="disc-extra-debt" step="1" placeholder="0" /></div>
       </div>
+    </div>
+
+    <div class="breakdown-card" id="disc-allocator-card" style="margin-top: 20px;">
+      <h3>Split your monthly pool</h3>
+      <div id="disc-pool-summary" style="margin: 10px 0 18px;"></div>
+      <div id="disc-allocator-rows"></div>
+      <div id="disc-allocator-total" style="margin-top: 14px;"></div>
+      <p class="cat-meta" style="margin-top: 10px;">Goal amounts here are saved straight to your Goals tab. "Extra toward debt" updates the waterfall below and the Debts tab payoff estimate.</p>
     </div>
 
     <div class="breakdown-card" style="margin-top: 20px;">
@@ -2303,7 +2310,7 @@ $('csv-file').addEventListener('change', e => {
 // =====================================================
 // DISCRETIONARY SPENDING CALCULATOR — "what can I spend"
 // =====================================================
-let discInputs = { income: 0, extraDebt: 0 };
+let discInputs = { income: 0, extraDebt: 0, discretionarySpend: 0 };
 let oneOffs = [];
 
 function loadDiscInputs() {
@@ -2464,21 +2471,23 @@ $('oneoff-save').addEventListener('click', () => {
 // This is the "show your work" view so the final number isn't a black box.
 function renderWaterfall() {
   const income = parseFloat($('disc-income').value) || 0;
-  const extraDebt = parseFloat($('disc-extra-debt').value) || 0;
+  const extraDebt = parseFloat($('disc-extra-debt')?.value) || discInputs.extraDebt || 0;
+  const spend = parseFloat($('disc-spend-input')?.value) || discInputs.discretionarySpend || 0;
   const fixed = totalRecurringPerMonth();
   const debtMin = totalDebtMinimums();
   const goalsMonthly = totalGoalsMonthly();
   const keys = discMonthKeys();
   const firstKey = keys[0];
   const oneOffTotal = oneOffs.reduce((sum, o) => sum + oneOffAmountForMonth(o, firstKey), 0);
-  const discretionary = income - fixed - debtMin - goalsMonthly - extraDebt - oneOffTotal;
+  const unallocated = income - fixed - debtMin - goalsMonthly - extraDebt - spend - oneOffTotal;
 
   const rows = [
     { label: 'Net income', amount: income, sign: '' },
     { label: 'Fixed costs (Monthly tab)', amount: fixed, sign: '−' },
     { label: 'Debt minimum payments (Debts tab)', amount: debtMin, sign: '−' },
     { label: 'Goal contributions (Goals tab)', amount: goalsMonthly, sign: '−' },
-    { label: 'Extra toward debt', amount: extraDebt, sign: '−' },
+    { label: 'Discretionary spending (set above)', amount: spend, sign: '−' },
+    { label: 'Extra toward debt (set above)', amount: extraDebt, sign: '−' },
   ];
   if (oneOffTotal > 0) rows.push({ label: `One-time costs (${monthLabel(firstKey)})`, amount: oneOffTotal, sign: '−' });
 
@@ -2488,12 +2497,12 @@ function renderWaterfall() {
   </div>`).join('');
 
   html += `<div style="display: flex; justify-content: space-between; padding: 10px 0 0; margin-top: 4px; border-top: 1.5px solid var(--ink); font-size: 17px; font-family: var(--serif);">
-    <span><strong>Discretionary — ${monthLabel(firstKey)}</strong></span>
-    <span class="diff-cell ${discretionary < 0 ? 'over' : 'under'}" style="font-size: 19px;"><strong>${fmtMoney(discretionary)}</strong></span>
+    <span><strong>Unallocated — ${monthLabel(firstKey)}</strong></span>
+    <span class="diff-cell ${unallocated < 0 ? 'over' : 'under'}" style="font-size: 19px;"><strong>${fmtMoney(unallocated)}</strong></span>
   </div>`;
 
   if (goalsMonthly === 0 && (goals || []).length > 0) {
-    html += `<p class="cat-meta" style="margin-top: 10px;">None of your goals have a planned monthly contribution set yet — edit a goal to add one, and it'll factor in here automatically.</p>`;
+    html += `<p class="cat-meta" style="margin-top: 10px;">None of your goals have a planned monthly contribution set yet — set one in "Split your monthly pool" above and it'll factor in here automatically.</p>`;
   }
 
   $('disc-waterfall').innerHTML = html;
@@ -2504,27 +2513,29 @@ function renderWaterfall() {
 // the picture month to month rather than just looking at one snapshot.
 function renderDiscretionaryResults() {
   const income = parseFloat($('disc-income').value) || 0;
-  const extraDebt = parseFloat($('disc-extra-debt').value) || 0;
+  const extraDebt = parseFloat($('disc-extra-debt')?.value) || discInputs.extraDebt || 0;
+  const spend = parseFloat($('disc-spend-input')?.value) || discInputs.discretionarySpend || 0;
   const fixed = totalRecurringPerMonth();
   const debtMin = totalDebtMinimums();
   const goalsMonthly = totalGoalsMonthly();
   const keys = discMonthKeys();
 
   let html = `<table class="item-table"><thead><tr>
-    <th>Month</th><th style="text-align:right;">One-time costs</th><th style="text-align:right;">Discretionary</th>
+    <th>Month</th><th style="text-align:right;">One-time costs</th><th style="text-align:right;">Unallocated</th>
   </tr></thead><tbody>`;
 
   keys.forEach(k => {
     const oneOffTotal = oneOffs.reduce((sum, o) => sum + oneOffAmountForMonth(o, k), 0);
-    const discretionary = income - fixed - debtMin - goalsMonthly - extraDebt - oneOffTotal;
-    const cls = discretionary < 0 ? 'over' : 'under';
+    const unallocated = income - fixed - debtMin - goalsMonthly - extraDebt - spend - oneOffTotal;
+    const cls = unallocated < 0 ? 'over' : 'under';
     html += `<tr>
       <td>${monthLabel(k)}</td>
       <td style="text-align:right; font-family: var(--mono);">${oneOffTotal > 0 ? fmtMoney(oneOffTotal) : '—'}</td>
-      <td style="text-align:right;"><span class="diff-cell ${cls}" style="font-size: 15px;">${fmtMoney(discretionary)}</span></td>
+      <td style="text-align:right;"><span class="diff-cell ${cls}" style="font-size: 15px;">${fmtMoney(unallocated)}</span></td>
     </tr>`;
   });
-  html += `</tbody></table>`;
+  html += `</tbody></table>
+  <p class="cat-meta" style="margin-top: 10px;">"Unallocated" is what's left after your discretionary spending, goal contributions, and extra debt payments above — money you haven't assigned anywhere yet. One-time costs (like a trip or a gift) reduce it further in the month they land.</p>`;
 
   if (income === 0) {
     html = `<p style="color: var(--muted); font-size: 13px;">Enter your monthly income above to see what's left to spend.</p>`;
@@ -2534,27 +2545,121 @@ function renderDiscretionaryResults() {
   renderWaterfall();
 }
 
+// Computes the monthly pool available to allocate: income minus fixed costs
+// and debt minimums. This is the number the allocator below divides up.
+function availablePool() {
+  const income = parseFloat($('disc-income').value) || 0;
+  return income - totalRecurringPerMonth() - totalDebtMinimums();
+}
+
+// Renders the "Split your monthly pool" allocator: one row per active goal
+// (pulled live from the Goals tab), a Discretionary spending row, and an
+// Extra-toward-debt row. Editing any number here writes straight back to
+// its source (goal.monthly in the Goals tab, or discInputs.extraDebt) so
+// the rest of the app — including the waterfall below — stays in sync.
+function renderAllocator() {
+  const pool = availablePool();
+  $('disc-pool-summary').innerHTML = `<div style="display: flex; justify-content: space-between; align-items: baseline;">
+    <span style="font-size: 14px; color: var(--muted);">Available this month (income − fixed costs − debt minimums)</span>
+    <span style="font-family: var(--mono); font-size: 20px;">${fmtMoney(pool)}</span>
+  </div>`;
+
+  const activeGoals = (goals || []).filter(g => Math.max(0, (parseFloat(g.target) || 0) - (parseFloat(g.saved) || 0)) > 0);
+
+  let rowsHtml = '';
+  activeGoals.forEach(g => {
+    const remaining = (parseFloat(g.target) || 0) - (parseFloat(g.saved) || 0);
+    rowsHtml += `<div class="modal-field-row" style="margin-top: 10px; align-items: end;">
+      <div class="modal-field" style="flex: 2;"><label>${escapeHtml(g.name)} <span class="cat-meta" style="margin: 0;">(${fmtMoney(remaining)} to go)</span></label></div>
+      <div class="modal-field"><input type="number" step="1" placeholder="0" data-goal-monthly="${g.id}" value="${g.monthly || ''}" /></div>
+    </div>`;
+  });
+
+  rowsHtml += `<div class="modal-field-row" style="margin-top: 10px; align-items: end;">
+    <div class="modal-field" style="flex: 2;"><label>Discretionary spending <span class="cat-meta" style="margin: 0;">(eating out, trips, misc)</span></label></div>
+    <div class="modal-field"><input type="number" step="1" placeholder="0" id="disc-spend-input" value="${discInputs.discretionarySpend || ''}" /></div>
+  </div>`;
+
+  rowsHtml += `<div class="modal-field-row" style="margin-top: 10px; align-items: end;">
+    <div class="modal-field" style="flex: 2;"><label>Extra toward debt <span class="cat-meta" style="margin: 0;">(beyond minimums — goes to highest-rate balance)</span></label></div>
+    <div class="modal-field"><input type="number" step="1" placeholder="0" id="disc-extra-debt" value="${discInputs.extraDebt || ''}" /></div>
+  </div>`;
+
+  if (activeGoals.length === 0) {
+    rowsHtml = `<p class="cat-meta" style="margin-bottom: 10px;">No active goals yet — add one in the Goals tab and it'll show up here.</p>` + rowsHtml;
+  }
+
+  $('disc-allocator-rows').innerHTML = rowsHtml;
+
+  // Wire up goal inputs — each writes straight back to that goal's record.
+  $('disc-allocator-rows').querySelectorAll('[data-goal-monthly]').forEach(input => {
+    input.addEventListener('input', () => {
+      const g = goals.find(x => x.id === input.dataset.goalMonthly);
+      if (g) {
+        g.monthly = parseFloat(input.value) || 0;
+        debounceSaveGoalsAndRerender();
+      }
+    });
+  });
+  $('disc-spend-input').addEventListener('input', () => {
+    discInputs.discretionarySpend = parseFloat($('disc-spend-input').value) || 0;
+    debounceSaveDisc();
+  });
+  $('disc-extra-debt').addEventListener('input', () => {
+    discInputs.extraDebt = parseFloat($('disc-extra-debt').value) || 0;
+    debounceSaveDisc();
+  });
+
+  renderAllocatorTotal();
+}
+
+// Shows the running total vs. the available pool, colored to make it obvious
+// whether the person has allocated too much, too little, or exactly enough.
+function renderAllocatorTotal() {
+  const pool = availablePool();
+  const goalsTotal = totalGoalsMonthly();
+  const spend = parseFloat($('disc-spend-input')?.value) || discInputs.discretionarySpend || 0;
+  const extraDebt = parseFloat($('disc-extra-debt')?.value) || discInputs.extraDebt || 0;
+  const allocated = goalsTotal + spend + extraDebt;
+  const remaining = pool - allocated;
+  const cls = Math.abs(remaining) < 1 ? 'good' : remaining < 0 ? 'bad' : 'warn';
+  const label = Math.abs(remaining) < 1 ? "Fully allocated" : remaining < 0 ? "Over-allocated by" : "Still unallocated";
+  $('disc-allocator-total').innerHTML = `<div style="display: flex; justify-content: space-between; padding-top: 10px; border-top: 1.5px solid var(--ink);">
+    <span style="font-family: var(--serif); font-style: italic; font-size: 16px;">${label}</span>
+    <span style="font-family: var(--mono); font-size: 18px; color: var(--${cls});">${fmtMoney(Math.abs(remaining))}</span>
+  </div>`;
+}
+
+let saveGoalsTimer = null;
+function debounceSaveGoalsAndRerender() {
+  if (saveGoalsTimer) clearTimeout(saveGoalsTimer);
+  saveGoalsTimer = setTimeout(() => {
+    saveGoals();
+    renderAllocatorTotal();
+    renderDiscretionaryResults();
+  }, 400);
+}
+
 function initDiscretionaryPanel() {
   loadDiscInputs();
   loadOneOffs();
   $('disc-income').value = discInputs.income || '';
-  $('disc-extra-debt').value = discInputs.extraDebt || '';
   renderOneOffList();
+  renderAllocator();
   renderDiscretionaryResults();
 }
 
-['disc-income', 'disc-extra-debt'].forEach(id => {
-  $(id).addEventListener('input', () => {
-    discInputs = { income: parseFloat($('disc-income').value) || 0, extraDebt: parseFloat($('disc-extra-debt').value) || 0 };
-    debounceSaveDisc();
-  });
+$('disc-income').addEventListener('input', () => {
+  discInputs.income = parseFloat($('disc-income').value) || 0;
+  debounceSaveDisc();
+  renderAllocator();
 });
 $('disc-range').addEventListener('change', renderDiscretionaryResults);
 
 let discSaveTimer = null;
 function debounceSaveDisc() {
   if (discSaveTimer) clearTimeout(discSaveTimer);
-  discSaveTimer = setTimeout(() => { saveDiscInputs(); renderDiscretionaryResults(); }, 400);
+  discSaveTimer = setTimeout(() => { saveDiscInputs(); renderAllocatorTotal(); renderDiscretionaryResults(); }, 400);
 }
 
 // =====================================================
