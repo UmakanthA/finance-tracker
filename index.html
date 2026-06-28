@@ -2327,10 +2327,28 @@ function saveOneOffs() {
   flashSaved();
 }
 
-// Total recurring expenses per month, straight from the Recurring expenses
-// list on the Monthly tab — this is the "fixed costs" half of the equation.
+// Total fixed costs for the month currently loaded on the Monthly tab.
+// Combines two sources, since people log fixed costs two different ways:
+//  1. Recurring templates that have been "applied" (their amount lives in
+//     this.recurring, used as a forward-looking default for future months)
+//  2. Actuals typed directly into the "Fixed (mandatory)" category group
+//     for the currently selected month (currentData) — this is what most
+//     people do the first time, before discovering Recurring expenses.
+// We take the larger of "sum of recurring templates" vs "sum of actuals
+// logged against Fixed-group items this month", rather than adding them,
+// so a person who only ever uses one workflow doesn't get double-counted,
+// while someone using actuals-only still gets a real number here.
 function totalRecurringPerMonth() {
-  return (recurring || []).reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+  const recurringTotal = (recurring || []).reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+  const fixedGroup = CATS.find(g => g.id === 'g_fixed');
+  let actualsTotal = 0;
+  if (fixedGroup && currentData && currentData.items) {
+    fixedGroup.items.forEach(item => {
+      const rec = currentData.items[item.id];
+      if (rec) actualsTotal += parseFloat(rec.actual) || 0;
+    });
+  }
+  return Math.max(recurringTotal, actualsTotal);
 }
 
 // Total of all debts' monthly minimum payments, from the Debts tab.
@@ -2457,7 +2475,7 @@ function renderWaterfall() {
 
   const rows = [
     { label: 'Net income', amount: income, sign: '' },
-    { label: 'Fixed costs (Recurring, Monthly tab)', amount: fixed, sign: '−' },
+    { label: 'Fixed costs (Monthly tab)', amount: fixed, sign: '−' },
     { label: 'Debt minimum payments (Debts tab)', amount: debtMin, sign: '−' },
     { label: 'Goal contributions (Goals tab)', amount: goalsMonthly, sign: '−' },
     { label: 'Extra toward debt', amount: extraDebt, sign: '−' },
