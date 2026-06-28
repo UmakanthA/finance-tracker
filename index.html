@@ -403,9 +403,16 @@
     <div class="breakdown-card" id="disc-allocator-card" style="margin-top: 20px;">
       <h3>Split your monthly pool</h3>
       <div id="disc-pool-summary" style="margin: 10px 0 18px;"></div>
+
+      <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px;">
+        <h4 style="font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 16px; margin: 0;">Your priorities, ranked</h4>
+        <button class="mini-btn" id="use-suggested-btn">Use suggested split</button>
+      </div>
+      <div id="priority-list" style="margin-bottom: 18px;"></div>
+
       <div id="disc-allocator-rows"></div>
       <div id="disc-allocator-total" style="margin-top: 14px;"></div>
-      <p class="cat-meta" style="margin-top: 10px;">Goal amounts here are saved straight to your Goals tab. "Extra toward debt" updates the waterfall below and the Debts tab payoff estimate.</p>
+      <p class="cat-meta" style="margin-top: 10px;">Goal amounts here are saved straight to your Goals tab. "Extra toward debt" updates the waterfall below and the Debts tab payoff estimate. Reorder your priorities above, then click "Use suggested split" to auto-fill the numbers below — you can still hand-edit anything after.</p>
     </div>
 
     <div class="breakdown-card" style="margin-top: 20px;">
@@ -682,6 +689,7 @@ const KEYS = {
   recurring: 'reckoning_recurring',
   discretionary: 'reckoning_discretionary',
   oneOffs: 'reckoning_oneoffs',
+  priorities: 'reckoning_priorities',
 };
 
 const $ = id => document.getElementById(id);
@@ -2552,6 +2560,151 @@ function availablePool() {
   return income - totalRecurringPerMonth() - totalDebtMinimums();
 }
 
+// =====================================================
+// PRIORITY RANKING + SUGGESTED SPLIT ALGORITHM
+// =====================================================
+let priorityOrder = [];
+
+// Builds the full set of allocation items that need ranking: every active
+// (not-yet-met) goal, plus the two fixed slots Discretionary and Extra debt.
+function allocationItemIds() {
+  const activeGoals = (goals || []).filter(g => Math.max(0, (parseFloat(g.target) || 0) - (parseFloat(g.saved) || 0)) > 0);
+  return [...activeGoals.map(g => 'goal:' + g.id), 'discretionary', 'extra_debt'];
+}
+
+function allocationItemLabel(id) {
+  if (id === 'discretionary') return 'Discretionary spending';
+  if (id === 'extra_debt') return 'Extra toward debt';
+  const goalId = id.replace('goal:', '');
+  const g = goals.find(x => x.id === goalId);
+  return g ? g.name : '(removed goal)';
+}
+
+function loadPriorityOrder() {
+  try {
+    const raw = localStorage.getItem(KEYS.priorities);
+    priorityOrder = raw ? JSON.parse(raw) : [];
+  } catch (e) { priorityOrder = []; }
+}
+function savePriorityOrder() {
+  localStorage.setItem(KEYS.priorities, JSON.stringify(priorityOrder));
+  flashSaved();
+}
+
+// Keeps priorityOrder in sync with reality: drops items that no longer
+// exist (goal deleted or met), and appends any new items (a goal just
+// added) to the end of the existing order, so a person's past ranking
+// isn't lost just because their goal list changed.
+function reconcilePriorityOrder() {
+  const valid = new Set(allocationItemIds());
+  priorityOrder = priorityOrder.filter(id => valid.has(id));
+  valid.forEach(id => { if (!priorityOrder.includes(id)) priorityOrder.push(id); });
+}
+
+function renderPriorityList() {
+  reconcilePriorityOrder();
+  const wrap = $('priority-list');
+  wrap.innerHTML = priorityOrder.map((id, idx) => `
+    <div style="display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 0.5px dashed var(--rule);">
+      <span style="font-family: var(--mono); font-size: 12px; color: var(--muted); width: 18px;">${idx + 1}</span>
+      <span style="flex: 1; font-size: 14px;">${escapeHtml(allocationItemLabel(id))}</span>
+      <button class="mini-btn" data-rank-up="${id}" ${idx === 0 ? 'disabled' : ''}>↑</button>
+      <button class="mini-btn" data-rank-down="${id}" ${idx === priorityOrder.length - 1 ? 'disabled' : ''}>↓</button>
+    </div>`).join('');
+  wrap.querySelectorAll('[data-rank-up]').forEach(b => b.addEventListener('click', () => moveRank(b.dataset.rankUp, -1)));
+  wrap.querySelectorAll('[data-rank-down]').forEach(b => b.addEventListener('click', () => moveRank(b.dataset.rankDown, 1)));
+}
+
+function moveRank(id, dir) {
+  const i = priorityOrder.indexOf(id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= priorityOrder.length) return;
+  [priorityOrder[i], priorityOrder[j]] = [priorityOrder[j], priorityOrder[i]];
+  savePriorityOrder();
+  renderPriorityList();
+}
+
+// Number of months available to save before a goal's deadline, counted as
+// full calendar months strictly BEFORE the deadline's month — so a deadline
+// of Aug 17 reached in July gives exactly 1 month (July itself), not 2,
+// since the money should be ready before the date arrives, not during its
+// own month. Floors at 1 so a same-month or already-past deadline still
+// gets treated as "due now" rather than dividing by zero or going negative.
+function monthsUntilDeadline(deadline) {
+  if (!deadline) return null;
+  const [y, m] = monthSel.value.split('-').map(Number); // m is 1-indexed
+  const dl = new Date(deadline + 'T00:00:00');
+  const monthsBefore = (dl.getFullYear() - y) * 12 + ((dl.getMonth() + 1) - m);
+  return Math.max(1, monthsBefore);
+}
+
+// The suggested-split algorithm:
+//  1. Goals with a deadline get a non-negotiable minimum: remaining ÷
+//     months left. This comes off the pool first, regardless of rank —
+//     a deadline is a fact, not a preference.
+//  2. Whatever's left splits across the remaining items (goals with no
+//     deadline, Discretionary, Extra debt) using weights derived from
+//     the person's rank: 1st place among the remaining items gets the
+//     biggest share, last gets the smallest, but everyone gets something.
+function computeSuggestedSplit() {
+  const pool = availablePool();
+  const result = {}; // id -> suggested monthly amount
+  let remainingPool = pool;
+
+  const deadlineItems = [];
+  const flexibleItems = [];
+  priorityOrder.forEach(id => {
+    if (id.startsWith('goal:')) {
+      const g = goals.find(x => x.id === id.replace('goal:', ''));
+      if (g && g.deadline) deadlineItems.push(id);
+      else flexibleItems.push(id);
+    } else {
+      flexibleItems.push(id);
+    }
+  });
+
+  deadlineItems.forEach(id => {
+    const g = goals.find(x => x.id === id.replace('goal:', ''));
+    const remaining = Math.max(0, (parseFloat(g.target) || 0) - (parseFloat(g.saved) || 0));
+    const months = monthsUntilDeadline(g.deadline);
+    const minMonthly = months ? remaining / months : remaining;
+    result[id] = Math.max(0, Math.min(minMonthly, remainingPool));
+    remainingPool -= result[id];
+  });
+
+  // Weighted split of whatever's left: rank position N (1st in this
+  // flexible subset) gets weight (count - position), so earlier rank
+  // always gets a strictly larger share than anything ranked below it.
+  const n = flexibleItems.length;
+  const totalWeight = flexibleItems.reduce((sum, _, idx) => sum + (n - idx), 0);
+  flexibleItems.forEach((id, idx) => {
+    const weight = n - idx;
+    result[id] = totalWeight > 0 ? Math.max(0, remainingPool) * (weight / totalWeight) : 0;
+  });
+
+  return result;
+}
+
+function applySuggestedSplit() {
+  const suggested = computeSuggestedSplit();
+  Object.keys(suggested).forEach(id => {
+    const amount = Math.round(suggested[id] * 100) / 100;
+    if (id === 'discretionary') {
+      discInputs.discretionarySpend = amount;
+    } else if (id === 'extra_debt') {
+      discInputs.extraDebt = amount;
+    } else if (id.startsWith('goal:')) {
+      const g = goals.find(x => x.id === id.replace('goal:', ''));
+      if (g) g.monthly = amount;
+    }
+  });
+  saveGoals();
+  saveDiscInputs();
+  renderAllocator();
+  renderDiscretionaryResults();
+}
+$('use-suggested-btn').addEventListener('click', applySuggestedSplit);
+
 // Renders the "Split your monthly pool" allocator: one row per active goal
 // (pulled live from the Goals tab), a Discretionary spending row, and an
 // Extra-toward-debt row. Editing any number here writes straight back to
@@ -2564,13 +2717,16 @@ function renderAllocator() {
     <span style="font-family: var(--mono); font-size: 20px;">${fmtMoney(pool)}</span>
   </div>`;
 
+  renderPriorityList();
+
   const activeGoals = (goals || []).filter(g => Math.max(0, (parseFloat(g.target) || 0) - (parseFloat(g.saved) || 0)) > 0);
 
   let rowsHtml = '';
   activeGoals.forEach(g => {
     const remaining = (parseFloat(g.target) || 0) - (parseFloat(g.saved) || 0);
+    const deadlineNote = g.deadline ? ` · due ${new Date(g.deadline).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}` : '';
     rowsHtml += `<div class="modal-field-row" style="margin-top: 10px; align-items: end;">
-      <div class="modal-field" style="flex: 2;"><label>${escapeHtml(g.name)} <span class="cat-meta" style="margin: 0;">(${fmtMoney(remaining)} to go)</span></label></div>
+      <div class="modal-field" style="flex: 2;"><label>${escapeHtml(g.name)} <span class="cat-meta" style="margin: 0;">(${fmtMoney(remaining)} to go${deadlineNote})</span></label></div>
       <div class="modal-field"><input type="number" step="1" placeholder="0" data-goal-monthly="${g.id}" value="${g.monthly || ''}" /></div>
     </div>`;
   });
@@ -2643,6 +2799,7 @@ function debounceSaveGoalsAndRerender() {
 function initDiscretionaryPanel() {
   loadDiscInputs();
   loadOneOffs();
+  loadPriorityOrder();
   $('disc-income').value = discInputs.income || '';
   renderOneOffList();
   renderAllocator();
