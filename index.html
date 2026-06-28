@@ -392,28 +392,28 @@
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px;">
       <h2 style="font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 26px;">What can I spend?</h2>
     </div>
-    <p class="cat-meta" style="margin: 0 0 16px;">Income minus your fixed costs, debt payments, and savings goal — the actual leftover for eating out, trips, and other discretionary spending, month by month.</p>
+    <p class="cat-meta" style="margin: 0 0 16px;">Income minus fixed costs, debt payments, and savings — the real leftover for eating out, trips, and everything else.</p>
 
     <div class="quick-add" id="disc-inputs-card">
-      <h3>Your numbers</h3>
-      <div class="modal-field-row" style="margin-top: 10px;">
+      <div class="modal-field-row" style="margin-top: 0;">
         <div class="modal-field"><label>Net monthly income</label><input type="number" id="disc-income" step="1" placeholder="0" /></div>
-        <div class="modal-field"><label>Months to show</label>
-          <select id="disc-range">
-            <option value="3">Next 3 months</option>
-            <option value="6" selected>Next 6 months</option>
-            <option value="12">Next 12 months</option>
-          </select>
-        </div>
-      </div>
-      <div class="modal-field-row">
-        <div class="modal-field"><label>Monthly savings goal (emergency fund, etc.)</label><input type="number" id="disc-savings" step="1" placeholder="0" /></div>
         <div class="modal-field"><label>Extra toward debt (beyond minimums)</label><input type="number" id="disc-extra-debt" step="1" placeholder="0" /></div>
       </div>
-      <div class="cat-meta" style="margin: 4px 0 0;">Fixed costs are pulled automatically from your Recurring expenses (Monthly tab) and minimum payments from your Debts tab. Add anything one-time below.</div>
     </div>
 
-    <div class="quick-add" id="disc-oneoffs-card">
+    <div class="breakdown-card" style="margin-top: 20px;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 10px;">
+        <h3>The waterfall — this month</h3>
+        <select id="disc-range" class="month-select" style="font-size: 14px;">
+          <option value="3">Next 3 months</option>
+          <option value="6" selected>Next 6 months</option>
+          <option value="12">Next 12 months</option>
+        </select>
+      </div>
+      <div id="disc-waterfall" style="margin-top: 14px;"></div>
+    </div>
+
+    <div class="quick-add" id="disc-oneoffs-card" style="margin-top: 20px;">
       <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap;">
         <h3>One-time or seasonal costs</h3>
         <button class="mini-btn" id="oneoff-add-btn">+ Add one-off</button>
@@ -627,6 +627,7 @@
       <div class="modal-field"><label>Target amount</label><input type="number" id="goal-target" step="0.01" placeholder="0.00" /></div>
       <div class="modal-field"><label>Currently saved</label><input type="number" id="goal-saved" step="0.01" placeholder="0.00" /></div>
     </div>
+    <div class="modal-field"><label>Planned monthly contribution (optional — used in the Budget tab's "What can I spend" calculator)</label><input type="number" id="goal-monthly" step="0.01" placeholder="0.00" /></div>
     <div class="modal-field"><label>Notes (optional)</label><textarea id="goal-notes" rows="2"></textarea></div>
     <div class="modal-actions"><button class="tool" id="goal-cancel">Cancel</button><button class="tool primary" id="goal-save">Save</button></div>
   </div>
@@ -1523,7 +1524,7 @@ function renderGoals() {
         <div class="goal-card-head">
           <div>
             <h3>${escapeHtml(g.name)} ${isComplete ? '<span style="font-family: var(--mono); font-size: 11px; color: var(--good); margin-left: 8px;">REACHED ✓</span>' : ''}</h3>
-            <div class="meta">${goalCategoryLabel(g.category)}${g.deadline ? ` · by ${new Date(g.deadline).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}` : ''}</div>
+            <div class="meta">${goalCategoryLabel(g.category)}${g.deadline ? ` · by ${new Date(g.deadline).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}` : ''}${g.monthly ? ` · ${fmtMoney(parseFloat(g.monthly))}/mo planned` : ''}</div>
           </div>
           <div class="goal-card-actions">
             <button class="icon-btn" data-edit-goal="${g.id}">Edit</button>
@@ -1583,6 +1584,7 @@ function openGoalModal(id) {
   $('goal-category').value = g ? g.category : 'trip';
   $('goal-target').value = g ? (g.target || '') : '';
   $('goal-saved').value = g ? (g.saved || '') : '';
+  $('goal-monthly').value = g ? (g.monthly || '') : '';
   $('goal-deadline').value = g ? (g.deadline || '') : '';
   $('goal-notes').value = g ? (g.notes || '') : '';
   $('goal-modal').classList.add('open');
@@ -1595,7 +1597,7 @@ $('goal-modal').addEventListener('click', e => { if (e.target.id === 'goal-modal
 $('goal-save').addEventListener('click', () => {
   const name = $('goal-name').value.trim();
   if (!name) { $('goal-name').focus(); return; }
-  const data = { name, category: $('goal-category').value, target: parseFloat($('goal-target').value) || 0, saved: parseFloat($('goal-saved').value) || 0, deadline: $('goal-deadline').value, notes: $('goal-notes').value.trim() };
+  const data = { name, category: $('goal-category').value, target: parseFloat($('goal-target').value) || 0, saved: parseFloat($('goal-saved').value) || 0, monthly: parseFloat($('goal-monthly').value) || 0, deadline: $('goal-deadline').value, notes: $('goal-notes').value.trim() };
   if (editingGoalId) {
     const idx = goals.findIndex(x => x.id === editingGoalId);
     goals[idx] = { ...goals[idx], ...data };
@@ -2301,7 +2303,7 @@ $('csv-file').addEventListener('change', e => {
 // =====================================================
 // DISCRETIONARY SPENDING CALCULATOR — "what can I spend"
 // =====================================================
-let discInputs = { income: 0, savings: 0, extraDebt: 0 };
+let discInputs = { income: 0, extraDebt: 0 };
 let oneOffs = [];
 
 function loadDiscInputs() {
@@ -2334,6 +2336,16 @@ function totalRecurringPerMonth() {
 // Total of all debts' monthly minimum payments, from the Debts tab.
 function totalDebtMinimums() {
   return (debts || []).reduce((sum, d) => sum + (parseFloat(d.payment) || 0), 0);
+}
+
+// Total of all goals' planned monthly contributions, from the Goals tab.
+// Goals with no planned amount set (or already met) contribute $0.
+function totalGoalsMonthly() {
+  return (goals || []).reduce((sum, g) => {
+    const remaining = Math.max(0, (parseFloat(g.target) || 0) - (parseFloat(g.saved) || 0));
+    if (remaining <= 0) return sum;
+    return sum + (parseFloat(g.monthly) || 0);
+  }, 0);
 }
 
 // Generates the list of month keys this calculator should display, starting
@@ -2428,16 +2440,56 @@ $('oneoff-save').addEventListener('click', () => {
   saveOneOffs(); closeOneOffModal(); renderOneOffList(); renderDiscretionaryResults();
 });
 
-// Renders the per-month discretionary breakdown table: income minus
-// recurring fixed costs, debt minimums, extra debt payments, savings goal,
-// and any one-off costs landing in that month — leaving the real spendable
-// amount for everything else (eating out, trips, misc).
-function renderDiscretionaryResults() {
+// Renders the line-by-line waterfall for the FIRST month in the selected
+// range — income down to fixed costs, debt minimums, goal contributions,
+// extra debt payment, and one-off costs, ending in the discretionary amount.
+// This is the "show your work" view so the final number isn't a black box.
+function renderWaterfall() {
   const income = parseFloat($('disc-income').value) || 0;
-  const savingsGoal = parseFloat($('disc-savings').value) || 0;
   const extraDebt = parseFloat($('disc-extra-debt').value) || 0;
   const fixed = totalRecurringPerMonth();
   const debtMin = totalDebtMinimums();
+  const goalsMonthly = totalGoalsMonthly();
+  const keys = discMonthKeys();
+  const firstKey = keys[0];
+  const oneOffTotal = oneOffs.reduce((sum, o) => sum + oneOffAmountForMonth(o, firstKey), 0);
+  const discretionary = income - fixed - debtMin - goalsMonthly - extraDebt - oneOffTotal;
+
+  const rows = [
+    { label: 'Net income', amount: income, sign: '' },
+    { label: 'Fixed costs (Recurring, Monthly tab)', amount: fixed, sign: '−' },
+    { label: 'Debt minimum payments (Debts tab)', amount: debtMin, sign: '−' },
+    { label: 'Goal contributions (Goals tab)', amount: goalsMonthly, sign: '−' },
+    { label: 'Extra toward debt', amount: extraDebt, sign: '−' },
+  ];
+  if (oneOffTotal > 0) rows.push({ label: `One-time costs (${monthLabel(firstKey)})`, amount: oneOffTotal, sign: '−' });
+
+  let html = rows.map(r => `<div style="display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 0.5px dashed var(--rule); font-size: 14px;">
+    <span style="color: var(--muted);">${r.label}</span>
+    <span style="font-family: var(--mono);">${r.sign}${fmtMoney(r.amount)}</span>
+  </div>`).join('');
+
+  html += `<div style="display: flex; justify-content: space-between; padding: 10px 0 0; margin-top: 4px; border-top: 1.5px solid var(--ink); font-size: 17px; font-family: var(--serif);">
+    <span><strong>Discretionary — ${monthLabel(firstKey)}</strong></span>
+    <span class="diff-cell ${discretionary < 0 ? 'over' : 'under'}" style="font-size: 19px;"><strong>${fmtMoney(discretionary)}</strong></span>
+  </div>`;
+
+  if (goalsMonthly === 0 && (goals || []).length > 0) {
+    html += `<p class="cat-meta" style="margin-top: 10px;">None of your goals have a planned monthly contribution set yet — edit a goal to add one, and it'll factor in here automatically.</p>`;
+  }
+
+  $('disc-waterfall').innerHTML = html;
+}
+
+// Renders the per-month discretionary summary table across the selected
+// range, so you can see how one-off costs (like a visit or a gift) change
+// the picture month to month rather than just looking at one snapshot.
+function renderDiscretionaryResults() {
+  const income = parseFloat($('disc-income').value) || 0;
+  const extraDebt = parseFloat($('disc-extra-debt').value) || 0;
+  const fixed = totalRecurringPerMonth();
+  const debtMin = totalDebtMinimums();
+  const goalsMonthly = totalGoalsMonthly();
   const keys = discMonthKeys();
 
   let html = `<table class="item-table"><thead><tr>
@@ -2446,7 +2498,7 @@ function renderDiscretionaryResults() {
 
   keys.forEach(k => {
     const oneOffTotal = oneOffs.reduce((sum, o) => sum + oneOffAmountForMonth(o, k), 0);
-    const discretionary = income - fixed - debtMin - extraDebt - savingsGoal - oneOffTotal;
+    const discretionary = income - fixed - debtMin - goalsMonthly - extraDebt - oneOffTotal;
     const cls = discretionary < 0 ? 'over' : 'under';
     html += `<tr>
       <td>${monthLabel(k)}</td>
@@ -2454,29 +2506,28 @@ function renderDiscretionaryResults() {
       <td style="text-align:right;"><span class="diff-cell ${cls}" style="font-size: 15px;">${fmtMoney(discretionary)}</span></td>
     </tr>`;
   });
-  html += `</tbody></table>
-  <div class="cat-meta" style="margin-top: 12px;">Per month: ${fmtMoney(income)} income − ${fmtMoney(fixed)} fixed costs (recurring) − ${fmtMoney(debtMin)} debt minimums − ${fmtMoney(extraDebt)} extra debt − ${fmtMoney(savingsGoal)} savings goal − one-time costs shown above.</div>`;
+  html += `</tbody></table>`;
 
   if (income === 0) {
     html = `<p style="color: var(--muted); font-size: 13px;">Enter your monthly income above to see what's left to spend.</p>`;
   }
 
   $('disc-results').innerHTML = html;
+  renderWaterfall();
 }
 
 function initDiscretionaryPanel() {
   loadDiscInputs();
   loadOneOffs();
   $('disc-income').value = discInputs.income || '';
-  $('disc-savings').value = discInputs.savings || '';
   $('disc-extra-debt').value = discInputs.extraDebt || '';
   renderOneOffList();
   renderDiscretionaryResults();
 }
 
-['disc-income', 'disc-savings', 'disc-extra-debt'].forEach(id => {
+['disc-income', 'disc-extra-debt'].forEach(id => {
   $(id).addEventListener('input', () => {
-    discInputs = { income: parseFloat($('disc-income').value) || 0, savings: parseFloat($('disc-savings').value) || 0, extraDebt: parseFloat($('disc-extra-debt').value) || 0 };
+    discInputs = { income: parseFloat($('disc-income').value) || 0, extraDebt: parseFloat($('disc-extra-debt').value) || 0 };
     debounceSaveDisc();
   });
 });
