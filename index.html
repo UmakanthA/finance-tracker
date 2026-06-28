@@ -235,8 +235,8 @@
     .tx-add-form, .pay-form, .contribute-form { grid-template-columns: 100px 1fr; }
     .tx-add-form input:nth-child(3), .pay-form input:nth-child(3), .contribute-form input:nth-child(3) { grid-column: 1 / 2; }
     .tx-add-form button, .pay-form button, .contribute-form button { grid-column: 2 / 3; }
-    .item-table thead th:nth-child(2) { display: none; }
-    .item-table tbody td:nth-child(2) { display: none; }
+    .item-table:not(#budget-grid-wrap .item-table) thead th:nth-child(2) { display: none; }
+    .item-table:not(#budget-grid-wrap .item-table) tbody td:nth-child(2) { display: none; }
     .debt-stats, .goal-stats { grid-template-columns: repeat(2, 1fr); gap: 14px 0; }
     .debt-stats > div, .goal-stats > div { padding: 0 12px; border-right: 0.5px solid var(--rule); }
     .debt-stats > div:nth-child(2), .goal-stats > div:nth-child(2) { border-right: none; padding-right: 0; }
@@ -273,6 +273,7 @@
     <button class="tab" data-tab="debts">Debts <span class="count" id="debt-count">0</span></button>
     <button class="tab" data-tab="goals">Goals <span class="count" id="goal-count">0</span></button>
     <button class="tab" data-tab="networth">Net worth</button>
+    <button class="tab" data-tab="budget">Budget</button>
   </nav>
 
   <div class="top-bar">
@@ -387,7 +388,133 @@
     <div id="goals-list" class="card-grid"></div>
   </div>
 
+  <div class="view" id="view-budget">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px;">
+      <h2 style="font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 26px;">What can I spend?</h2>
+    </div>
+    <p class="cat-meta" style="margin: 0 0 16px;">Income minus your fixed costs, debt payments, and savings goal — the actual leftover for eating out, trips, and other discretionary spending, month by month.</p>
+
+    <div class="quick-add" id="disc-inputs-card">
+      <h3>Your numbers</h3>
+      <div class="modal-field-row" style="margin-top: 10px;">
+        <div class="modal-field"><label>Net monthly income</label><input type="number" id="disc-income" step="1" placeholder="0" /></div>
+        <div class="modal-field"><label>Months to show</label>
+          <select id="disc-range">
+            <option value="3">Next 3 months</option>
+            <option value="6" selected>Next 6 months</option>
+            <option value="12">Next 12 months</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-field-row">
+        <div class="modal-field"><label>Monthly savings goal (emergency fund, etc.)</label><input type="number" id="disc-savings" step="1" placeholder="0" /></div>
+        <div class="modal-field"><label>Extra toward debt (beyond minimums)</label><input type="number" id="disc-extra-debt" step="1" placeholder="0" /></div>
+      </div>
+      <div class="cat-meta" style="margin: 4px 0 0;">Fixed costs are pulled automatically from your Recurring expenses (Monthly tab) and minimum payments from your Debts tab. Add anything one-time below.</div>
+    </div>
+
+    <div class="quick-add" id="disc-oneoffs-card">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap;">
+        <h3>One-time or seasonal costs</h3>
+        <button class="mini-btn" id="oneoff-add-btn">+ Add one-off</button>
+      </div>
+      <div id="oneoff-list" style="margin-top: 10px;"></div>
+    </div>
+
+    <div class="breakdown-card" style="margin-top: 24px;">
+      <h3>Discretionary spending, by month</h3>
+      <div id="disc-results" style="margin-top: 14px;"></div>
+    </div>
+
+    <div class="summary-grid" style="grid-template-columns: repeat(3, 1fr); margin-top: 32px;">
+      <div class="summary-cell"><div class="label">Months shown</div><div class="value" id="bud-months">0</div><div class="sub">Most recent</div></div>
+      <div class="summary-cell remain"><div class="label">Avg under/over</div><div class="value" id="bud-avg-diff">—</div><div class="sub" id="bud-avg-sub">Per month, all categories</div></div>
+      <div class="summary-cell warn"><div class="label">Months over budget</div><div class="value" id="bud-over-count">0</div><div class="sub">Out of months shown</div></div>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 10px;">
+      <h2 style="font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 26px;">Budget vs actual</h2>
+      <div style="display: flex; gap: 8px;">
+        <select id="bud-range" class="month-select" style="font-size: 14px;">
+          <option value="6">Last 6 months</option>
+          <option value="12" selected>Last 12 months</option>
+          <option value="24">Last 24 months</option>
+        </select>
+        <button class="tool primary" id="bud-set-btn">+ Set budget</button>
+      </div>
+    </div>
+    <div id="budget-grid-wrap" style="overflow-x: auto;"></div>
+
+    <div class="breakdown-card" style="margin-top: 32px;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 10px;">
+        <h3>Forecast — next 3 months</h3>
+        <div class="cat-meta" style="margin: 0;">Based on your average actual spend over the last 3 logged months</div>
+      </div>
+      <div id="forecast-grid" style="margin-top: 14px;"></div>
+    </div>
+  </div>
+
   <div class="footer-note">Data lives in your browser · Sync to Google Drive for backup · No tracking</div>
+</div>
+
+<!-- ONE-OFF EVENT MODAL -->
+<div class="modal-overlay" id="oneoff-modal">
+  <div class="modal">
+    <h2 id="oneoff-modal-title">Add a one-time cost</h2>
+    <div class="modal-field"><label>Description</label><input type="text" id="oneoff-desc" placeholder="e.g., Parents visiting, Brother's birthday gift" /></div>
+    <div class="modal-field-row">
+      <div class="modal-field"><label>Total amount</label><input type="number" id="oneoff-amount" step="0.01" placeholder="0.00" /></div>
+      <div class="modal-field"><label>Spread across</label>
+        <select id="oneoff-spread">
+          <option value="1">Just one month</option>
+          <option value="2">2 months</option>
+          <option value="3" selected>3 months</option>
+          <option value="4">4 months</option>
+          <option value="6">6 months</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-field"><label>Starting month</label><input type="month" id="oneoff-start" /></div>
+    <div class="modal-actions">
+      <button class="tool" id="oneoff-cancel">Cancel</button>
+      <button class="tool primary" id="oneoff-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- SET BUDGET MODAL -->
+<div class="modal-overlay" id="setbudget-modal">
+  <div class="modal">
+    <h2>Set a budget</h2>
+    <p class="modal-sub" style="margin-bottom: 16px;">Applies a budget amount across a range of months. This overwrites any existing per-month budget for the item(s) chosen, in the months selected.</p>
+    <div class="modal-field">
+      <label>Apply to</label>
+      <select id="sb-scope">
+        <option value="group">Entire category group</option>
+        <option value="item">Single item</option>
+      </select>
+    </div>
+    <div class="modal-field" id="sb-group-field">
+      <label>Category group</label>
+      <select id="sb-group"></select>
+    </div>
+    <div class="modal-field" id="sb-item-field" style="display:none;">
+      <label>Item</label>
+      <select id="sb-item"></select>
+    </div>
+    <div class="modal-field">
+      <label id="sb-amount-label">Monthly budget for this group (split evenly across its items)</label>
+      <input type="number" id="sb-amount" step="0.01" placeholder="0.00" />
+    </div>
+    <div class="modal-field-row">
+      <div class="modal-field"><label>From month</label><input type="month" id="sb-from" /></div>
+      <div class="modal-field"><label>To month</label><input type="month" id="sb-to" /></div>
+    </div>
+    <div class="modal-actions">
+      <button class="tool" id="sb-cancel">Cancel</button>
+      <button class="tool primary" id="sb-save">Apply</button>
+    </div>
+  </div>
 </div>
 
 <!-- WELCOME / SETUP MODAL -->
@@ -478,7 +605,10 @@
       <div class="modal-field"><label>Original amount</label><input type="number" id="debt-original" step="0.01" placeholder="0.00" /></div>
       <div class="modal-field"><label>Current balance</label><input type="number" id="debt-balance" step="0.01" placeholder="0.00" /></div>
     </div>
-    <div class="modal-field"><label>Monthly minimum payment</label><input type="number" id="debt-payment" step="0.01" placeholder="0.00" /></div>
+    <div class="modal-field-row">
+      <div class="modal-field"><label>Monthly minimum payment</label><input type="number" id="debt-payment" step="0.01" placeholder="0.00" /></div>
+      <div class="modal-field"><label>0% APR ends (optional)</label><input type="date" id="debt-promo-end" /></div>
+    </div>
     <div class="modal-field"><label>Notes (optional)</label><textarea id="debt-notes" rows="2"></textarea></div>
     <div class="modal-actions"><button class="tool" id="debt-cancel">Cancel</button><button class="tool primary" id="debt-save">Save</button></div>
   </div>
@@ -542,6 +672,8 @@ const KEYS = {
   setupDone: 'reckoning_setup_done',
   assets: 'reckoning_assets',
   recurring: 'reckoning_recurring',
+  discretionary: 'reckoning_discretionary',
+  oneOffs: 'reckoning_oneoffs',
 };
 
 const $ = id => document.getElementById(id);
@@ -703,6 +835,7 @@ document.querySelectorAll('.tab').forEach(btn => {
     if (target === 'debts') renderDebts();
     if (target === 'goals') renderGoals();
     if (target === 'networth') renderAssets();
+    if (target === 'budget') { renderBudgetView(); initDiscretionaryPanel(); }
   });
 });
 
@@ -1252,12 +1385,22 @@ function renderDebts() {
       const fillClass = pct >= 75 ? 'good' : pct >= 25 ? 'warn' : 'bad';
       const isPaid = balance <= 0 && original > 0;
       const monthsToPayoff = (parseFloat(d.payment) > 0 && balance > 0) ? Math.ceil(balance / parseFloat(d.payment)) : null;
+      let promoNote = '';
+      if (d.promoEndDate) {
+        const today2 = new Date(); today2.setHours(0,0,0,0);
+        const promoDate = new Date(d.promoEndDate + 'T00:00:00');
+        const daysLeft = Math.round((promoDate - today2) / 86400000);
+        const monthsLeft = Math.round(daysLeft / 30.44);
+        const urgent = daysLeft <= 90 && daysLeft >= 0;
+        const past = daysLeft < 0;
+        promoNote = ` · <span style="${urgent ? 'color: var(--bad); font-weight: 500;' : ''}">${past ? '0% APR ended ' + promoDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '0% APR ends ' + promoDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) + (urgent ? ` (${monthsLeft}mo)` : '')}</span>`;
+      }
       return `
       <div class="debt-card ${isPaid ? 'paid' : ''}">
         <div class="debt-card-head">
           <div>
             <h3>${escapeHtml(d.name)} ${isPaid ? '<span style="font-family: var(--mono); font-size: 11px; color: var(--good); margin-left: 8px;">PAID OFF</span>' : ''}</h3>
-            <div class="meta">${debtTypeLabel(d.type)}${d.rate ? ` · ${d.rate}% APR` : ''}</div>
+            <div class="meta">${debtTypeLabel(d.type)}${d.rate ? ` · ${d.rate}% APR` : ''}${promoNote}</div>
           </div>
           <div class="debt-card-actions">
             <button class="icon-btn" data-edit-debt="${d.id}">Edit</button>
@@ -1320,6 +1463,7 @@ function openDebtModal(id) {
   $('debt-original').value = d ? (d.original || '') : '';
   $('debt-balance').value = d ? (d.balance || '') : '';
   $('debt-payment').value = d ? (d.payment || '') : '';
+  $('debt-promo-end').value = d ? (d.promoEndDate || '') : '';
   $('debt-notes').value = d ? (d.notes || '') : '';
   $('debt-modal').classList.add('open');
   setTimeout(() => $('debt-name').focus(), 50);
@@ -1331,7 +1475,7 @@ $('debt-modal').addEventListener('click', e => { if (e.target.id === 'debt-modal
 $('debt-save').addEventListener('click', () => {
   const name = $('debt-name').value.trim();
   if (!name) { $('debt-name').focus(); return; }
-  const data = { name, type: $('debt-type').value, rate: parseFloat($('debt-rate').value) || 0, original: parseFloat($('debt-original').value) || 0, balance: parseFloat($('debt-balance').value) || 0, payment: parseFloat($('debt-payment').value) || 0, notes: $('debt-notes').value.trim() };
+  const data = { name, type: $('debt-type').value, rate: parseFloat($('debt-rate').value) || 0, original: parseFloat($('debt-original').value) || 0, balance: parseFloat($('debt-balance').value) || 0, payment: parseFloat($('debt-payment').value) || 0, promoEndDate: $('debt-promo-end').value || '', notes: $('debt-notes').value.trim() };
   if (editingDebtId) {
     const idx = debts.findIndex(x => x.id === editingDebtId);
     debts[idx] = { ...debts[idx], ...data };
@@ -2153,6 +2297,458 @@ $('csv-file').addEventListener('change', e => {
   reader.readAsText(file);
   e.target.value = '';
 });
+
+// =====================================================
+// DISCRETIONARY SPENDING CALCULATOR — "what can I spend"
+// =====================================================
+let discInputs = { income: 0, savings: 0, extraDebt: 0 };
+let oneOffs = [];
+
+function loadDiscInputs() {
+  try {
+    const raw = localStorage.getItem(KEYS.discretionary);
+    if (raw) discInputs = { ...discInputs, ...JSON.parse(raw) };
+  } catch (e) {}
+}
+function saveDiscInputs() {
+  localStorage.setItem(KEYS.discretionary, JSON.stringify(discInputs));
+  flashSaved();
+}
+function loadOneOffs() {
+  try {
+    const raw = localStorage.getItem(KEYS.oneOffs);
+    oneOffs = raw ? JSON.parse(raw) : [];
+  } catch (e) { oneOffs = []; }
+}
+function saveOneOffs() {
+  localStorage.setItem(KEYS.oneOffs, JSON.stringify(oneOffs));
+  flashSaved();
+}
+
+// Total recurring expenses per month, straight from the Recurring expenses
+// list on the Monthly tab — this is the "fixed costs" half of the equation.
+function totalRecurringPerMonth() {
+  return (recurring || []).reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+}
+
+// Total of all debts' monthly minimum payments, from the Debts tab.
+function totalDebtMinimums() {
+  return (debts || []).reduce((sum, d) => sum + (parseFloat(d.payment) || 0), 0);
+}
+
+// Generates the list of month keys this calculator should display, starting
+// from the currently selected Monthly-tab month (so "this month" lines up
+// with whatever the person is looking at elsewhere in the app).
+function discMonthKeys() {
+  const range = parseInt($('disc-range').value, 10) || 6;
+  const [y, m] = monthSel.value.split('-').map(Number);
+  const keys = [];
+  for (let i = 0; i < range; i++) {
+    const d = new Date(y, m - 1 + i, 1);
+    keys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  return keys;
+}
+
+// Spreads a one-off's total amount evenly across its configured number of
+// months starting at its start month, and returns how much of it lands in
+// the given target month key (0 if the one-off doesn't touch that month).
+function oneOffAmountForMonth(oneOff, monthKeyTarget) {
+  const spread = Math.max(1, parseInt(oneOff.spread, 10) || 1);
+  const perMonth = (parseFloat(oneOff.amount) || 0) / spread;
+  const keys = monthKeysBetween(oneOff.startMonth, addMonthsToKey(oneOff.startMonth, spread - 1));
+  return keys.includes(monthKeyTarget) ? perMonth : 0;
+}
+
+// Adds n months to a "YYYY-MM" key and returns the resulting "YYYY-MM" key.
+function addMonthsToKey(key, n) {
+  const [y, m] = key.split('-').map(Number);
+  const d = new Date(y, m - 1 + n, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function renderOneOffList() {
+  const wrap = $('oneoff-list');
+  if (oneOffs.length === 0) {
+    wrap.innerHTML = `<p style="color: var(--muted); font-size: 13px;">No one-time costs added. Use this for things like a visit from family, a gift, or a big trip.</p>`;
+    return;
+  }
+  wrap.innerHTML = oneOffs.map(o => {
+    const spread = Math.max(1, parseInt(o.spread, 10) || 1);
+    const endMonth = addMonthsToKey(o.startMonth, spread - 1);
+    const rangeLabel = spread > 1 ? `${shortMonthLabel(o.startMonth)}–${shortMonthLabel(endMonth)}` : shortMonthLabel(o.startMonth);
+    return `<div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 0.5px dashed var(--rule);">
+      <div>
+        <div style="font-size: 14px;">${escapeHtml(o.desc)}</div>
+        <div class="cat-meta" style="margin: 2px 0 0;">${fmtMoney(parseFloat(o.amount) || 0, 2)} · ${rangeLabel}${spread > 1 ? ` (${fmtMoney((parseFloat(o.amount) || 0) / spread, 2)}/mo)` : ''}</div>
+      </div>
+      <div class="item-actions" style="opacity: 1;">
+        <button class="mini-btn" data-edit-oneoff="${o.id}">Edit</button>
+        <button class="mini-btn danger" data-del-oneoff="${o.id}">×</button>
+      </div>
+    </div>`;
+  }).join('');
+  wrap.querySelectorAll('[data-edit-oneoff]').forEach(b => b.addEventListener('click', () => openOneOffModal(b.dataset.editOneoff)));
+  wrap.querySelectorAll('[data-del-oneoff]').forEach(b => b.addEventListener('click', () => {
+    const o = oneOffs.find(x => x.id === b.dataset.delOneoff);
+    if (o && confirm(`Remove "${o.desc}"?`)) { oneOffs = oneOffs.filter(x => x.id !== o.id); saveOneOffs(); renderOneOffList(); renderDiscretionaryResults(); }
+  }));
+}
+
+let editingOneOffId = null;
+function openOneOffModal(id) {
+  editingOneOffId = id || null;
+  const o = id ? oneOffs.find(x => x.id === id) : null;
+  $('oneoff-modal-title').textContent = o ? 'Edit one-time cost' : 'Add a one-time cost';
+  $('oneoff-desc').value = o ? o.desc : '';
+  $('oneoff-amount').value = o ? o.amount : '';
+  $('oneoff-spread').value = o ? String(o.spread) : '3';
+  $('oneoff-start').value = o ? o.startMonth : monthSel.value;
+  $('oneoff-modal').classList.add('open');
+  setTimeout(() => $('oneoff-desc').focus(), 50);
+}
+function closeOneOffModal() { $('oneoff-modal').classList.remove('open'); editingOneOffId = null; }
+$('oneoff-add-btn').addEventListener('click', () => openOneOffModal());
+$('oneoff-cancel').addEventListener('click', closeOneOffModal);
+$('oneoff-modal').addEventListener('click', e => { if (e.target.id === 'oneoff-modal') closeOneOffModal(); });
+$('oneoff-save').addEventListener('click', () => {
+  const desc = $('oneoff-desc').value.trim();
+  const amount = parseFloat($('oneoff-amount').value);
+  const startMonth = $('oneoff-start').value;
+  if (!desc) { $('oneoff-desc').focus(); return; }
+  if (!amount || amount <= 0) { $('oneoff-amount').focus(); return; }
+  if (!startMonth) { $('oneoff-start').focus(); return; }
+  const data = { desc, amount, spread: parseInt($('oneoff-spread').value, 10) || 1, startMonth };
+  if (editingOneOffId) {
+    const idx = oneOffs.findIndex(x => x.id === editingOneOffId);
+    oneOffs[idx] = { ...oneOffs[idx], ...data };
+  } else {
+    oneOffs.push({ id: uid(), ...data });
+  }
+  saveOneOffs(); closeOneOffModal(); renderOneOffList(); renderDiscretionaryResults();
+});
+
+// Renders the per-month discretionary breakdown table: income minus
+// recurring fixed costs, debt minimums, extra debt payments, savings goal,
+// and any one-off costs landing in that month — leaving the real spendable
+// amount for everything else (eating out, trips, misc).
+function renderDiscretionaryResults() {
+  const income = parseFloat($('disc-income').value) || 0;
+  const savingsGoal = parseFloat($('disc-savings').value) || 0;
+  const extraDebt = parseFloat($('disc-extra-debt').value) || 0;
+  const fixed = totalRecurringPerMonth();
+  const debtMin = totalDebtMinimums();
+  const keys = discMonthKeys();
+
+  let html = `<table class="item-table"><thead><tr>
+    <th>Month</th><th style="text-align:right;">One-time costs</th><th style="text-align:right;">Discretionary</th>
+  </tr></thead><tbody>`;
+
+  keys.forEach(k => {
+    const oneOffTotal = oneOffs.reduce((sum, o) => sum + oneOffAmountForMonth(o, k), 0);
+    const discretionary = income - fixed - debtMin - extraDebt - savingsGoal - oneOffTotal;
+    const cls = discretionary < 0 ? 'over' : 'under';
+    html += `<tr>
+      <td>${monthLabel(k)}</td>
+      <td style="text-align:right; font-family: var(--mono);">${oneOffTotal > 0 ? fmtMoney(oneOffTotal) : '—'}</td>
+      <td style="text-align:right;"><span class="diff-cell ${cls}" style="font-size: 15px;">${fmtMoney(discretionary)}</span></td>
+    </tr>`;
+  });
+  html += `</tbody></table>
+  <div class="cat-meta" style="margin-top: 12px;">Per month: ${fmtMoney(income)} income − ${fmtMoney(fixed)} fixed costs (recurring) − ${fmtMoney(debtMin)} debt minimums − ${fmtMoney(extraDebt)} extra debt − ${fmtMoney(savingsGoal)} savings goal − one-time costs shown above.</div>`;
+
+  if (income === 0) {
+    html = `<p style="color: var(--muted); font-size: 13px;">Enter your monthly income above to see what's left to spend.</p>`;
+  }
+
+  $('disc-results').innerHTML = html;
+}
+
+function initDiscretionaryPanel() {
+  loadDiscInputs();
+  loadOneOffs();
+  $('disc-income').value = discInputs.income || '';
+  $('disc-savings').value = discInputs.savings || '';
+  $('disc-extra-debt').value = discInputs.extraDebt || '';
+  renderOneOffList();
+  renderDiscretionaryResults();
+}
+
+['disc-income', 'disc-savings', 'disc-extra-debt'].forEach(id => {
+  $(id).addEventListener('input', () => {
+    discInputs = { income: parseFloat($('disc-income').value) || 0, savings: parseFloat($('disc-savings').value) || 0, extraDebt: parseFloat($('disc-extra-debt').value) || 0 };
+    debounceSaveDisc();
+  });
+});
+$('disc-range').addEventListener('change', renderDiscretionaryResults);
+
+let discSaveTimer = null;
+function debounceSaveDisc() {
+  if (discSaveTimer) clearTimeout(discSaveTimer);
+  discSaveTimer = setTimeout(() => { saveDiscInputs(); renderDiscretionaryResults(); }, 400);
+}
+
+// =====================================================
+// BUDGET TAB — multi-month view, bulk set, forecast
+// =====================================================
+
+// Returns an array of month keys ("YYYY-MM"), oldest first, ending at the
+// currently selected month in the Monthly tab (so the view stays in sync
+// with whatever "today" context the person is looking at).
+function recentMonthKeys(count) {
+  const [y, m] = monthSel.value.split('-').map(Number);
+  const keys = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(y, m - 1 - i, 1);
+    keys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  return keys;
+}
+
+function readMonth(key) {
+  try {
+    const raw = localStorage.getItem(KEYS.monthPrefix + key);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return null;
+}
+
+// Budget + actual totals for one category group in one month.
+// Falls back to each item's current default budget (CATS) when that month
+// was never saved, so unsaved future/past months still show something.
+function groupTotalsForMonth(group, monthData) {
+  let budget = 0, actual = 0, hasActual = false;
+  group.items.forEach(item => {
+    const rec = monthData && monthData.items && monthData.items[item.id];
+    budget += rec && rec.budget !== undefined ? (parseFloat(rec.budget) || 0) : (parseFloat(item.budget) || 0);
+    if (rec) {
+      const txs = rec.transactions || [];
+      if (txs.length > 0) { actual += txs.reduce((a, t) => a + (parseFloat(t.amount) || 0), 0); hasActual = true; }
+      else if (rec.actual) { actual += parseFloat(rec.actual) || 0; hasActual = true; }
+    }
+  });
+  return { budget, actual, hasActual };
+}
+
+function shortMonthLabel(k) {
+  const [y, m] = k.split('-');
+  const d = new Date(+y, +m - 1, 1);
+  return d.toLocaleDateString('en-US', { month: 'short' }) + " '" + String(y).slice(2);
+}
+
+function renderBudgetView() {
+  const range = parseInt($('bud-range').value, 10) || 12;
+  const keys = recentMonthKeys(range);
+  const monthsData = keys.map(k => ({ key: k, data: readMonth(k) }));
+
+  // ---- Grid: one row per category group, one column per month ----
+  const wrap = $('budget-grid-wrap');
+  if (CATS.length === 0) {
+    wrap.innerHTML = `<div class="empty-state"><h3>No categories yet</h3><p>Add categories in the Monthly tab first, then come back to set budgets.</p></div>`;
+  } else {
+    let html = `<table class="item-table" style="min-width: ${160 + keys.length * 110}px;">
+      <thead><tr><th style="position: sticky; left: 0; background: var(--paper); border-right: 1px solid var(--rule);">Category</th>`;
+    keys.forEach(k => { html += `<th style="width:100px; text-align:right;">${shortMonthLabel(k)}</th>`; });
+    html += `</tr></thead><tbody>`;
+
+    const groupTotalsByMonth = keys.map(() => ({ budget: 0, actual: 0 }));
+
+    CATS.forEach(g => {
+      html += `<tr><td style="position: sticky; left: 0; background: var(--paper); border-right: 1px solid var(--rule);"><strong>${escapeHtml(g.name)}</strong></td>`;
+      monthsData.forEach((md, idx) => {
+        const t = groupTotalsForMonth(g, md.data);
+        groupTotalsByMonth[idx].budget += t.budget;
+        groupTotalsByMonth[idx].actual += t.actual;
+        html += budgetCellHtml(t);
+      });
+      html += `</tr>`;
+    });
+
+    html += `<tr style="border-top: 1.5px solid var(--ink);"><td style="position: sticky; left: 0; background: var(--paper); border-right: 1px solid var(--rule);"><strong>Total</strong></td>`;
+    groupTotalsByMonth.forEach(t => { html += budgetCellHtml({ budget: t.budget, actual: t.actual, hasActual: t.actual > 0 || t.budget > 0 }); });
+    html += `</tr></tbody></table>`;
+    wrap.innerHTML = html;
+  }
+
+  // ---- Summary cells ----
+  let overCount = 0;
+  const perMonthDiff = monthsData.map(md => {
+    let budget = 0, actual = 0, hasActual = false;
+    CATS.forEach(g => {
+      const t = groupTotalsForMonth(g, md.data);
+      budget += t.budget; actual += t.actual; if (t.hasActual) hasActual = true;
+    });
+    return { hasActual, diff: budget - actual };
+  }).filter(d => d.hasActual);
+
+  $('bud-months').textContent = keys.length;
+  if (perMonthDiff.length > 0) {
+    const avg = perMonthDiff.reduce((a, d) => a + d.diff, 0) / perMonthDiff.length;
+    $('bud-avg-diff').textContent = (avg >= 0 ? '+' : '−') + fmtMoney(Math.abs(avg));
+    $('bud-avg-sub').textContent = avg >= 0 ? 'Under budget on average' : 'Over budget on average';
+    overCount = perMonthDiff.filter(d => d.diff < -0.5).length;
+  } else {
+    $('bud-avg-diff').textContent = '—';
+    $('bud-avg-sub').textContent = 'No logged months yet';
+  }
+  $('bud-over-count').textContent = overCount;
+
+  renderForecast();
+}
+
+function budgetCellHtml(t) {
+  if (!t.hasActual && t.budget <= 0) return `<td style="text-align:right; color: var(--muted);">—</td>`;
+  const diff = t.budget - t.actual;
+  let cls = '', sign = '';
+  if (t.hasActual) {
+    if (diff < -0.5) { cls = 'over'; sign = '−'; }
+    else if (diff > 0.5) { cls = 'under'; sign = '+'; }
+  }
+  const actualStr = t.hasActual ? fmtMoney(t.actual) : '—';
+  return `<td style="text-align:right;">
+    <div style="font-family: var(--mono); font-size: 13px;">${actualStr}</div>
+    <div class="diff-cell ${cls}" style="font-size: 11px;">${t.hasActual ? (sign + fmtMoney(Math.abs(diff)).slice(1)) : (t.budget > 0 ? 'bgt ' + fmtMoney(t.budget) : '')}</div>
+  </td>`;
+}
+
+// ---- Forecast: avg of last 3 months WITH actuals, per group, vs current budget ----
+function renderForecast() {
+  const lookback = recentMonthKeys(12).map(k => ({ key: k, data: readMonth(k) })).filter(md => md.data);
+  const last3 = lookback.slice(-3);
+  const grid = $('forecast-grid');
+
+  if (last3.length === 0) {
+    grid.innerHTML = `<p style="color: var(--muted); font-size: 13px;">Log at least one month of actuals to see a forecast.</p>`;
+    return;
+  }
+
+  let html = `<table class="item-table"><thead><tr>
+    <th>Category</th><th style="text-align:right;">Avg actual / mo</th><th style="text-align:right;">Current budget</th><th style="text-align:right;">Projected 3mo gap</th>
+  </tr></thead><tbody>`;
+
+  let totalAvg = 0, totalBudget = 0;
+  CATS.forEach(g => {
+    const actuals = last3.map(md => groupTotalsForMonth(g, md.data).actual);
+    const avg = actuals.reduce((a, v) => a + v, 0) / actuals.length;
+    const currentBudget = g.items.reduce((a, i) => a + (parseFloat(i.budget) || 0), 0);
+    totalAvg += avg; totalBudget += currentBudget;
+    const gap3mo = (currentBudget - avg) * 3;
+    const cls = gap3mo < -0.5 ? 'over' : gap3mo > 0.5 ? 'under' : '';
+    html += `<tr>
+      <td>${escapeHtml(g.name)}</td>
+      <td style="text-align:right; font-family: var(--mono);">${fmtMoney(avg)}</td>
+      <td style="text-align:right; font-family: var(--mono);">${fmtMoney(currentBudget)}</td>
+      <td style="text-align:right;"><span class="diff-cell ${cls}">${gap3mo >= 0 ? '+' : '−'}${fmtMoney(Math.abs(gap3mo))}</span></td>
+    </tr>`;
+  });
+  const totalGap = (totalBudget - totalAvg) * 3;
+  html += `<tr style="border-top: 1.5px solid var(--ink);">
+    <td><strong>Total</strong></td>
+    <td style="text-align:right; font-family: var(--mono);"><strong>${fmtMoney(totalAvg)}</strong></td>
+    <td style="text-align:right; font-family: var(--mono);"><strong>${fmtMoney(totalBudget)}</strong></td>
+    <td style="text-align:right;"><span class="diff-cell ${totalGap < -0.5 ? 'over' : totalGap > 0.5 ? 'under' : ''}">${totalGap >= 0 ? '+' : '−'}${fmtMoney(Math.abs(totalGap))}</span></td>
+  </tr></tbody></table>
+  <p style="color: var(--muted); font-size: 12px; margin-top: 10px;">Based on ${last3.length} logged month(s): ${last3.map(m => monthLabel(m.key)).join(', ')}.</p>`;
+  grid.innerHTML = html;
+}
+
+// ---- "Set budget" modal: bulk-write a budget across a month range ----
+function rebuildSbSelects() {
+  const groupSel = $('sb-group');
+  groupSel.innerHTML = CATS.map(g => `<option value="${g.id}">${escapeHtml(g.name)}</option>`).join('');
+  const itemSel = $('sb-item');
+  itemSel.innerHTML = '';
+  CATS.forEach(g => {
+    if (g.items.length === 0) return;
+    const og = document.createElement('optgroup');
+    og.label = g.name;
+    g.items.forEach(item => {
+      const opt = document.createElement('option');
+      opt.value = item.id; opt.textContent = item.label;
+      og.appendChild(opt);
+    });
+    itemSel.appendChild(og);
+  });
+}
+
+function openSetBudgetModal() {
+  rebuildSbSelects();
+  $('sb-scope').value = 'group';
+  $('sb-group-field').style.display = '';
+  $('sb-item-field').style.display = 'none';
+  $('sb-amount-label').textContent = 'Monthly budget for this group (split evenly across its items)';
+  $('sb-amount').value = '';
+  const cur = monthSel.value;
+  $('sb-from').value = cur;
+  $('sb-to').value = cur;
+  $('setbudget-modal').classList.add('open');
+}
+$('bud-set-btn').addEventListener('click', openSetBudgetModal);
+$('sb-cancel').addEventListener('click', () => $('setbudget-modal').classList.remove('open'));
+
+$('sb-scope').addEventListener('change', () => {
+  const isGroup = $('sb-scope').value === 'group';
+  $('sb-group-field').style.display = isGroup ? '' : 'none';
+  $('sb-item-field').style.display = isGroup ? 'none' : '';
+  $('sb-amount-label').textContent = isGroup
+    ? 'Monthly budget for this group (split evenly across its items)'
+    : 'Monthly budget for this item';
+});
+
+function monthKeysBetween(from, to) {
+  const [fy, fm] = from.split('-').map(Number);
+  const [ty, tm] = to.split('-').map(Number);
+  const keys = [];
+  let y = fy, m = fm;
+  // Safety cap so a fat-fingered date range can't loop forever.
+  let guard = 0;
+  while ((y < ty || (y === ty && m <= tm)) && guard < 600) {
+    keys.push(`${y}-${String(m).padStart(2, '0')}`);
+    m++; if (m > 12) { m = 1; y++; }
+    guard++;
+  }
+  return keys;
+}
+
+$('sb-save').addEventListener('click', () => {
+  const amount = parseFloat($('sb-amount').value);
+  if (isNaN(amount) || amount < 0) { $('sb-amount').focus(); return; }
+  const from = $('sb-from').value, to = $('sb-to').value;
+  if (!from || !to) { alert('Pick a from and to month.'); return; }
+  if (to < from) { alert('"To month" must be on or after "From month".'); return; }
+
+  const scope = $('sb-scope').value;
+  let itemIds = [];
+  if (scope === 'group') {
+    const g = CATS.find(x => x.id === $('sb-group').value);
+    if (!g || g.items.length === 0) { alert('That group has no items.'); return; }
+    itemIds = g.items.map(i => i.id);
+  } else {
+    itemIds = [$('sb-item').value];
+  }
+  const perItemAmount = scope === 'group' ? amount / itemIds.length : amount;
+
+  const keys = monthKeysBetween(from, to);
+  keys.forEach(key => {
+    const monthKeyFull = KEYS.monthPrefix + key;
+    let data;
+    try { const raw = localStorage.getItem(monthKeyFull); data = raw ? JSON.parse(raw) : null; } catch (e) { data = null; }
+    if (!data) data = blankMonthData();
+    itemIds.forEach(id => {
+      if (!data.items[id]) data.items[id] = { budget: 0, actual: 0, transactions: [] };
+      data.items[id].budget = perItemAmount;
+    });
+    data.savedAt = new Date().toISOString();
+    localStorage.setItem(monthKeyFull, JSON.stringify(data));
+  });
+
+  $('setbudget-modal').classList.remove('open');
+  flashSaved();
+  if (keys.includes(monthSel.value)) loadMonthData();
+  renderBudgetView();
+});
+
+$('bud-range').addEventListener('change', renderBudgetView);
 
 // =====================================================
 // INIT
