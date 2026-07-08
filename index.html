@@ -6,6 +6,11 @@
 <meta name="description" content="A privacy-first personal finance tracker. No accounts, no servers, all data stays on your device." />
 <title>Reckoning — Personal Finance Tracker</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='75' font-size='80' font-family='Georgia'%3E%24%3C/text%3E%3C/svg%3E" />
+<meta name="theme-color" content="#faf8f3" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Reckoning" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -92,6 +97,22 @@
   .quick-add-form input:focus, .quick-add-form select:focus { outline: none; border-color: var(--ink); }
   .quick-add-form button { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; background: var(--ink); color: var(--paper); border: none; cursor: pointer; padding: 8px 12px; }
   .quick-add-form button:hover { background: var(--accent); }
+
+  /* Fast-log: category chips, streak, toast */
+  .qa-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .qa-chip { font-family: var(--mono); font-size: 11px; letter-spacing: 0.05em; background: #fff; border: 0.5px solid var(--rule); padding: 6px 12px; cursor: pointer; color: var(--ink); border-radius: 14px; transition: all 0.12s; }
+  .qa-chip:hover { border-color: var(--ink); }
+  .qa-chip.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .streak-badge { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11px; color: var(--good); margin-top: 6px; letter-spacing: 0.08em; }
+  .streak-badge.cold { color: var(--muted); }
+  .log-toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(20px); background: var(--ink); color: var(--paper); font-family: var(--mono); font-size: 12px; padding: 12px 18px; border-radius: 4px; opacity: 0; pointer-events: none; transition: all 0.25s ease; z-index: 300; max-width: 90vw; text-align: center; line-height: 1.5; }
+  .log-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  @media (max-width: 640px) {
+    #qa-amt { font-size: 22px; padding: 12px; }
+    #qa-add { font-size: 14px; padding: 12px 16px; }
+    .qa-chip { font-size: 13px; padding: 9px 14px; }
+    .quick-add-form { grid-template-columns: 1fr; }
+  }
 
   .category-block { margin-bottom: 32px; }
   .cat-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--ink); gap: 12px; }
@@ -265,6 +286,7 @@
     <div class="masthead-right">
       <div>Personal Ledger</div>
       <div class="date" id="header-date"></div>
+      <div class="streak-badge cold" id="streak-badge"></div>
     </div>
   </header>
 
@@ -312,9 +334,13 @@
     <div class="quick-add">
       <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap;">
         <h3>Quick add — log an expense</h3>
-        <button class="mini-btn" id="csv-import-btn" title="Import transactions from a bank CSV export">Import bank CSV</button>
+        <div style="display: flex; gap: 6px;">
+          <button class="mini-btn" id="no-spend-btn" title="Log a no-spend day to keep your streak">No spend today</button>
+          <button class="mini-btn" id="csv-import-btn" title="Import transactions from a bank CSV export">Import bank CSV</button>
+        </div>
       </div>
       <input type="file" id="csv-file" accept=".csv,text/csv" style="display:none" />
+      <div class="qa-chips" id="qa-chips"></div>
       <div class="quick-add-form">
         <input type="date" id="qa-date" />
         <input type="text" id="qa-desc" placeholder="Description (e.g., Trader Joe's)" />
@@ -936,6 +962,7 @@ function rebuildQuickAddSelect() {
     });
     qaCat.appendChild(og);
   });
+  if (typeof buildQaChips === 'function') buildQaChips();
 }
 
 function renderCategories() {
@@ -1369,9 +1396,132 @@ $('qa-add').addEventListener('click', () => {
   $('qa-desc').value = ''; $('qa-amt').value = ''; $('qa-desc').focus();
   const trigger = document.querySelector(`.item-name[data-toggle="${cat}"]`);
   if (trigger && !trigger.classList.contains('expanded')) trigger.click();
+  markLoggedToday();
+  showLogFeedback(amt);
 });
 $('qa-amt').addEventListener('keydown', e => { if (e.key === 'Enter') $('qa-add').click(); });
 $('qa-date').value = localDateStr();
+
+// =====================================================
+// FAST-LOG: streak, category chips, instant feedback, PWA
+// =====================================================
+const LOGDAYS_KEY = 'reckoning_logdays';
+function loadLogDays() {
+  try { return JSON.parse(localStorage.getItem(LOGDAYS_KEY)) || []; } catch (e) { return []; }
+}
+function markLoggedToday() {
+  const days = loadLogDays();
+  const t = localDateStr();
+  if (!days.includes(t)) { days.push(t); days.sort(); localStorage.setItem(LOGDAYS_KEY, JSON.stringify(days.slice(-400))); }
+  renderStreak();
+}
+function computeStreak() {
+  const days = new Set(loadLogDays());
+  let streak = 0;
+  const d = new Date();
+  // Streak survives if you logged today OR yesterday (today isn't over yet)
+  if (!days.has(localDateStr(d))) d.setDate(d.getDate() - 1);
+  while (days.has(localDateStr(d))) { streak++; d.setDate(d.getDate() - 1); }
+  return streak;
+}
+function renderStreak() {
+  const el = $('streak-badge');
+  if (!el) return;
+  const s = computeStreak();
+  const loggedToday = loadLogDays().includes(localDateStr());
+  if (s === 0) { el.textContent = '○ Log something to start a streak'; el.classList.add('cold'); }
+  else {
+    el.textContent = `● ${s}-day streak` + (loggedToday ? '' : ' — log today to keep it');
+    el.classList.toggle('cold', !loggedToday);
+  }
+}
+let toastTimer = null;
+function showToast(msg) {
+  let t = document.querySelector('.log-toast');
+  if (!t) { t = document.createElement('div'); t.className = 'log-toast'; document.body.appendChild(t); }
+  t.textContent = msg;
+  requestAnimationFrame(() => t.classList.add('show'));
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
+}
+function showLogFeedback(amt) {
+  const income = parseFloat($('income').value) || 0;
+  let spent = 0;
+  Object.keys(currentData.items || {}).forEach(id => {
+    const it = currentData.items[id];
+    const txs = it.transactions || [];
+    spent += txs.length ? txs.reduce((a, t) => a + (parseFloat(t.amount) || 0), 0) : (parseFloat(it.actual) || 0);
+  });
+  const now = new Date();
+  const isCurrentMonth = monthSel.value === monthKey(now);
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const daysLeft = Math.max(1, daysInMonth - now.getDate() + 1);
+  let msg = `Logged ${fmtMoney(amt, 2)}`;
+  if (income > 0) {
+    const remain = income - spent;
+    msg += ` · ${fmtMoney(remain)} left this month`;
+    if (isCurrentMonth && remain > 0) msg += ` · ${fmtMoney(remain / daysLeft)}/day`;
+  }
+  const s = computeStreak();
+  if (s > 1) msg += ` · 🔥 ${s} days`;
+  showToast(msg);
+}
+$('no-spend-btn').addEventListener('click', () => {
+  markLoggedToday();
+  showToast(`No-spend day logged · 🔥 ${computeStreak()}-day streak`);
+});
+// Category chips: your 6 most-used items, one tap to select
+function buildQaChips() {
+  const wrap = $('qa-chips');
+  if (!wrap) return;
+  const counts = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith(KEYS.monthPrefix)) continue;
+    try {
+      const data = JSON.parse(localStorage.getItem(k));
+      Object.keys(data.items || {}).forEach(id => {
+        counts[id] = (counts[id] || 0) + ((data.items[id].transactions || []).length);
+      });
+    } catch (e) {}
+  }
+  const valid = [];
+  CATS.forEach(g => g.items.forEach(i => valid.push(i)));
+  const top = valid
+    .map(i => ({ id: i.id, label: i.label, n: counts[i.id] || 0 }))
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 6);
+  wrap.innerHTML = '';
+  top.forEach(item => {
+    const b = document.createElement('button');
+    b.className = 'qa-chip';
+    b.textContent = item.label;
+    b.addEventListener('click', () => {
+      $('qa-cat').value = item.id;
+      wrap.querySelectorAll('.qa-chip').forEach(c => c.classList.remove('active'));
+      b.classList.add('active');
+      $('qa-amt').focus();
+    });
+    wrap.appendChild(b);
+  });
+}
+// PWA manifest (blob URL keeps this a single file)
+(function installManifest() {
+  try {
+    const manifest = {
+      name: 'Reckoning', short_name: 'Reckoning',
+      start_url: location.origin + location.pathname,
+      display: 'standalone', background_color: '#faf8f3', theme_color: '#faf8f3',
+      icons: [{ src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23faf8f3'/%3E%3Ctext y='75' x='25' font-size='70' font-family='Georgia'%3E%24%3C/text%3E%3C/svg%3E", sizes: 'any', type: 'image/svg+xml' }]
+    };
+    const link = document.createElement('link');
+    link.rel = 'manifest';
+    link.href = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));
+    document.head.appendChild(link);
+  } catch (e) {}
+})();
+renderStreak();
+buildQaChips();
 
 // =====================================================
 // DEBTS
@@ -2276,7 +2426,7 @@ $('csv-file').addEventListener('change', e => {
       const pos = signs.filter(s => s > 0).length, neg = signs.length - pos;
       const expenseSign = (pos > 0 && neg > 0) ? (pos >= neg ? 1 : -1) : 0; // 0 = single-sign file, import all
       const incomeWords = /payroll|deposit|direct dep|refund|reimburse|cashback|interest paid|transfer from|payment received|payment thank/i;
-      let added = 0, skippedDate = 0, skippedAmt = 0, otherMonth = 0, fallback = 0, skippedCredit = 0;
+      let added = 0, skippedDate = 0, skippedAmt = 0, otherMonth = 0, fallback = 0, skippedCredit = 0, skippedDup = 0;
       for (let i = startRow; i < lines.length; i++) {
         const cols = parseCsvLine(lines[i]);
         if (cols.length < 2) continue;
@@ -2289,6 +2439,11 @@ $('csv-file').addEventListener('change', e => {
         if ((expenseSign !== 0 && Math.sign(rawAmt) !== expenseSign) || incomeWords.test(desc)) { skippedCredit++; continue; }
         const amount = Math.abs(rawAmt);
         if (date.slice(0, 7) !== monthSel.value) { otherMonth++; continue; }
+        // Skip duplicates: same date + amount + description already logged anywhere this month
+        const isDup = Object.keys(currentData.items).some(id =>
+          (currentData.items[id].transactions || []).some(t =>
+            t.date === date && (t.desc || '') === desc && Math.abs((parseFloat(t.amount) || 0) - amount) < 0.005));
+        if (isDup) { skippedDup++; continue; }
         const cat = autoCategorize(desc, learnedMap);
         if (!cat) { alert('Add at least one category before importing.'); return; }
         if (cat.how === 'fallback') fallback++;
@@ -2300,7 +2455,9 @@ $('csv-file').addEventListener('change', e => {
       }
       saveMonthData();
       loadMonthData();
+      if (added > 0 && typeof markLoggedToday === 'function') markLoggedToday();
       let msg = `Imported ${added} transaction(s) into ${monthLabel(monthSel.value)}.`;
+      if (skippedDup > 0) msg += `\n${skippedDup} skipped (already imported — duplicate date/amount/description).`;
       if (fallback > 0) msg += `\n${fallback} couldn't be auto-categorized and went to your Misc/first category — expand items to recheck them.`;
       if (skippedCredit > 0) msg += `\n${skippedCredit} skipped (deposits/credits — this imports expenses only).`;
       if (otherMonth > 0) msg += `\n${otherMonth} skipped (dated outside this month — switch months and re-import to add those).`;
