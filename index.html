@@ -88,6 +88,13 @@
   .income-row label { font-family: var(--mono); font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); }
   .income-row input { font-family: var(--serif); font-size: 26px; font-weight: 400; background: transparent; border: none; border-bottom: 1px solid var(--ink); padding: 4px 8px; width: 200px; color: var(--ink); }
   .income-row input:focus { outline: none; border-bottom-width: 2px; }
+  #income.locked { color: var(--muted); border-bottom-style: dashed; }
+  .paycheck-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-family: var(--mono); font-size: 12px; }
+  .paycheck-row input { font-family: var(--mono); font-size: 13px; background: #fff; border: 0.5px solid var(--rule); padding: 6px 8px; color: var(--ink); }
+  .paycheck-row input:focus { outline: none; border-color: var(--ink); }
+  .paycheck-row input.pc-date { width: 140px; }
+  .paycheck-row input.pc-amt { width: 110px; }
+  .paycheck-row .pc-del { background: none; border: none; color: var(--bad); cursor: pointer; font-size: 14px; padding: 2px 6px; }
 
   .quick-add { background: var(--paper-2); border: 1px solid var(--rule); padding: 16px 18px; margin-bottom: 28px; position: relative; }
   .quick-add::before { content: ''; position: absolute; top: -1px; left: -1px; right: -1px; bottom: -1px; border: 0.5px solid var(--ink); pointer-events: none; }
@@ -326,9 +333,13 @@
       <div class="summary-cell warn"><div class="label">vs Budget</div><div class="value" id="sum-budget-diff">—</div><div class="sub" id="sum-budget-sub">Set actuals to see</div></div>
     </div>
 
-    <div class="income-row">
+    <div class="income-row" style="flex-wrap: wrap;">
       <label for="income">Net monthly income</label>
       <input type="number" id="income" step="1" placeholder="0" />
+      <div id="paychecks" style="flex: 1; min-width: 260px;">
+        <div id="paycheck-rows"></div>
+        <button class="mini-btn" id="add-paycheck-btn" title="Track individual paychecks — income locks to their sum">+ Add paycheck</button>
+      </div>
     </div>
 
     <div class="quick-add">
@@ -1164,7 +1175,10 @@ function debounceSave() {
 
 function saveMonthData() {
   if (!currentData) return;
-  currentData.income = parseFloat($('income').value) || 0;
+  const pcs = currentData.paychecks || [];
+  currentData.income = pcs.length
+    ? pcs.reduce((a, p) => a + (parseFloat(p.amount) || 0), 0)
+    : (parseFloat($('income').value) || 0);
   document.querySelectorAll('.budget-in').forEach(el => {
     const id = el.dataset.id;
     if (!currentData.items[id]) currentData.items[id] = { budget: 0, actual: 0, transactions: [] };
@@ -1196,6 +1210,7 @@ function loadMonthData() {
   }));
 
   $('income').value = currentData.income || '';
+  if (typeof renderPaychecks === 'function') renderPaychecks();
 
   document.querySelectorAll('.budget-in').forEach(el => {
     const id = el.dataset.id;
@@ -1522,6 +1537,65 @@ function buildQaChips() {
 })();
 renderStreak();
 buildQaChips();
+
+// =====================================================
+// PAYCHECKS — track each paycheck; income = their sum
+// =====================================================
+function syncIncomeFromPaychecks() {
+  const pcs = currentData.paychecks || [];
+  const incomeEl = $('income');
+  if (pcs.length) {
+    const total = pcs.reduce((a, p) => a + (parseFloat(p.amount) || 0), 0);
+    incomeEl.value = total ? total.toFixed(2) : '';
+    incomeEl.readOnly = true;
+    incomeEl.classList.add('locked');
+    incomeEl.title = 'Locked — sum of paychecks below. Delete all paychecks to edit directly.';
+  } else {
+    incomeEl.readOnly = false;
+    incomeEl.classList.remove('locked');
+    incomeEl.title = '';
+  }
+  updateMonthlyTotals();
+  try { updateDiscIncomeFromLedger(); } catch (e) { /* disc panel not initialized yet */ }
+}
+function renderPaychecks() {
+  const wrap = $('paycheck-rows');
+  if (!wrap || !currentData) return;
+  const pcs = currentData.paychecks || [];
+  wrap.innerHTML = '';
+  pcs.forEach(p => {
+    const row = document.createElement('div');
+    row.className = 'paycheck-row';
+    row.innerHTML = `
+      <input type="date" class="pc-date" value="${escapeHtml(p.date || '')}" />
+      <input type="number" class="pc-amt" step="0.01" placeholder="Net amount" value="${p.amount || ''}" />
+      <button class="pc-del" title="Remove paycheck">✕</button>`;
+    row.querySelector('.pc-date').addEventListener('change', e => { p.date = e.target.value; debounceSave(); });
+    row.querySelector('.pc-amt').addEventListener('input', e => { p.amount = parseFloat(e.target.value) || 0; syncIncomeFromPaychecks(); debounceSave(); });
+    row.querySelector('.pc-del').addEventListener('click', () => {
+      currentData.paychecks = currentData.paychecks.filter(x => x.id !== p.id);
+      renderPaychecks();
+      saveMonthData();
+    });
+    wrap.appendChild(row);
+  });
+  syncIncomeFromPaychecks();
+}
+$('add-paycheck-btn').addEventListener('click', () => {
+  if (!currentData.paychecks) currentData.paychecks = [];
+  // Default the date: first paycheck on the 1st, each next one 14 days after the last
+  let defDate = monthSel.value + '-01';
+  const last = currentData.paychecks[currentData.paychecks.length - 1];
+  if (last && last.date) {
+    const d = new Date(last.date + 'T12:00:00');
+    d.setDate(d.getDate() + 14);
+    defDate = localDateStr(d);
+  }
+  currentData.paychecks.push({ id: uid(), date: defDate, amount: 0 });
+  renderPaychecks();
+  const amts = $('paycheck-rows').querySelectorAll('.pc-amt');
+  if (amts.length) amts[amts.length - 1].focus();
+});
 
 // =====================================================
 // DEBTS
@@ -2958,15 +3032,39 @@ function initDiscretionaryPanel() {
   loadOneOffs();
   loadPriorityOrder();
   $('disc-income').value = discInputs.income || '';
+  updateDiscIncomeFromLedger();
   renderOneOffList();
   renderAllocator();
   renderDiscretionaryResults();
 }
 
+// Pull income from the Monthly tab (paycheck sum) unless the user has
+// typed their own value here. Clearing this field re-enables the auto-fill.
+function updateDiscIncomeFromLedger() {
+  const auto = discInputs.incomeAuto === true || !(parseFloat(discInputs.income) > 0);
+  if (!auto) return;
+  const ledgerIncome = (currentData && parseFloat(currentData.income)) || 0;
+  if (ledgerIncome > 0 && ledgerIncome !== discInputs.income) {
+    discInputs.income = ledgerIncome;
+    discInputs.incomeAuto = true;
+    $('disc-income').value = ledgerIncome.toFixed(2);
+    saveDiscInputs();
+    renderAllocator();
+    renderDiscretionaryResults();
+  } else if (ledgerIncome > 0) {
+    discInputs.incomeAuto = true;
+    $('disc-income').placeholder = 'From Monthly tab';
+  }
+}
+
 $('disc-income').addEventListener('input', () => {
   discInputs.income = parseFloat($('disc-income').value) || 0;
+  discInputs.incomeAuto = $('disc-income').value.trim() === '';
   debounceSaveDisc();
   renderAllocator();
+});
+$('disc-income').addEventListener('blur', () => {
+  if ($('disc-income').value.trim() === '') updateDiscIncomeFromLedger();
 });
 $('disc-range').addEventListener('change', renderDiscretionaryResults);
 
