@@ -249,6 +249,10 @@
 
   .footer-note { margin-top: 48px; padding-top: 16px; border-top: 0.5px solid var(--rule); text-align: center; font-family: var(--mono); font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); }
 
+  .alert-banner { border: 1px solid var(--bad); background: rgba(139,58,26,0.06); padding: 12px 16px; margin-bottom: 20px; font-size: 13px; }
+  .alert-banner .alert-line { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; }
+  .alert-banner .alert-line .amt { font-family: var(--mono); font-weight: 500; color: var(--bad); margin-left: auto; }
+
   .view { display: none; }
   .view.active { display: block; }
 
@@ -316,16 +320,19 @@
       <button class="tool drive" id="drive-load-btn" disabled>Load from Drive</button>
       <button class="tool" id="export-btn">Export</button>
       <button class="tool" id="import-btn">Import</button>
+      <button class="tool" id="stmt-import-btn" title="Import a statement-data JSON file (e.g., prepared by Claude from your bank/card/loan statements)">Statement import</button>
       <button class="tool" id="print-btn">Print</button>
       <button class="tool danger" id="reset-btn">Reset</button>
     </div>
     <input type="file" id="import-file" accept="application/json" style="display:none" />
+    <input type="file" id="stmt-file" accept="application/json" style="display:none" />
     <div style="width: 100%; display: flex; justify-content: flex-end; margin-top: -8px;">
       <div class="drive-status" id="drive-status"><span class="dot"></span> <span id="drive-status-text">Drive: not connected</span></div>
     </div>
   </div>
 
   <div class="view active" id="view-monthly">
+    <div id="budget-alerts" style="display:none;" class="alert-banner"></div>
     <div class="summary-grid">
       <div class="summary-cell"><div class="label">Net income</div><div class="value" id="sum-income">$0</div><div class="sub">After taxes</div></div>
       <div class="summary-cell spent"><div class="label">Spent</div><div class="value" id="sum-spent">$0</div><div class="sub" id="sum-pct">0% of income</div></div>
@@ -404,6 +411,10 @@
       <div class="summary-cell spent"><div class="label">Total balance owed</div><div class="value" id="debt-total">$0</div><div class="sub">Across all debts</div></div>
       <div class="summary-cell"><div class="label">Monthly payments</div><div class="value" id="debt-monthly">$0</div><div class="sub">Combined min payments</div></div>
       <div class="summary-cell remain"><div class="label">Total paid off</div><div class="value" id="debt-paid">$0</div><div class="sub" id="debt-paid-pct">—</div></div>
+    </div>
+    <div class="breakdown-card" id="payoff-plan-card" style="margin-top: 0; margin-bottom: 28px;">
+      <h3>This month's payment plan</h3>
+      <div id="payoff-plan"></div>
     </div>
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px;">
       <h2 style="font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 26px;">Your debts</h2>
@@ -659,6 +670,9 @@
     <div class="modal-field-row">
       <div class="modal-field"><label>Monthly minimum payment</label><input type="number" id="debt-payment" step="0.01" placeholder="0.00" /></div>
       <div class="modal-field"><label>0% APR ends (optional)</label><input type="date" id="debt-promo-end" /></div>
+    </div>
+    <div class="modal-field-row">
+      <div class="modal-field"><label>Payment due day of month (1–31)</label><input type="number" id="debt-due-day" min="1" max="31" placeholder="e.g., 15" /></div>
     </div>
     <div class="modal-field"><label>Notes (optional)</label><textarea id="debt-notes" rows="2"></textarea></div>
     <div class="modal-actions"><button class="tool" id="debt-cancel">Cancel</button><button class="tool primary" id="debt-save">Save</button></div>
@@ -1246,6 +1260,7 @@ function updateMonthlyTotals() {
   const income = parseFloat($('income').value) || 0;
   let totalSpent = 0, totalBudget = 0;
   const groupActuals = {};
+  const overItems = [];
 
   CATS.forEach(g => {
     groupActuals[g.id] = { name: g.name, actual: 0 };
@@ -1262,6 +1277,7 @@ function updateMonthlyTotals() {
         totalSpent += actual;
         groupActuals[g.id].actual += actual;
         const diff = budget - actual;
+        if (budget > 0 && diff < -0.5) overItems.push({ label: item.label, over: actual - budget });
         if (diff < -0.5) { dEl.textContent = '−' + fmtMoney(Math.abs(diff)).slice(1); dEl.className = 'diff-cell over'; }
         else if (diff > 0.5) { dEl.textContent = '+' + fmtMoney(diff).slice(1); dEl.className = 'diff-cell under'; }
         else { dEl.textContent = '±$0'; dEl.className = 'diff-cell'; }
@@ -1299,6 +1315,33 @@ function updateMonthlyTotals() {
   targetRow.className = 'breakdown-row target';
   targetRow.innerHTML = `<span class="lbl">20% savings target</span><span class="val">${fmtMoney(income * 0.20)}</span>`;
   breakdown.appendChild(targetRow);
+  renderBudgetAlerts(income, totalSpent, totalBudget, overItems);
+}
+
+// =====================================================
+// BUDGET ALERTS — warn when spending crosses the line
+// =====================================================
+function renderBudgetAlerts(income, totalSpent, totalBudget, overItems) {
+  const el = $('budget-alerts');
+  if (!el) return;
+  const lines = [];
+  if (income > 0 && totalSpent > income) {
+    lines.push({ msg: '🚨 Spending has passed your income this month', amt: fmtMoney(totalSpent - income) + ' over' });
+  }
+  if (totalBudget > 0 && totalSpent > totalBudget + 0.5) {
+    lines.push({ msg: '⚠ Over total budget for the month', amt: fmtMoney(totalSpent - totalBudget) + ' over' });
+  }
+  overItems
+    .sort((a, b) => b.over - a.over)
+    .slice(0, 5)
+    .forEach(o => lines.push({ msg: `⚠ ${escapeHtml(o.label)} is over its budget`, amt: fmtMoney(o.over) + ' over' }));
+  if (typeof debts !== 'undefined' && income > 0) {
+    const minSum = (debts || []).reduce((a, d) => a + (parseFloat(d.payment) || 0), 0);
+    if (minSum > income) lines.push({ msg: '🚨 Your combined debt minimums exceed your income — see the Debts tab plan', amt: fmtMoney(minSum - income) + ' short' });
+  }
+  if (lines.length === 0) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = '';
+  el.innerHTML = lines.map(l => `<div class="alert-line"><span>${l.msg}</span><span class="amt">${l.amt}</span></div>`).join('');
 }
 
 // =====================================================
@@ -1412,7 +1455,7 @@ $('qa-add').addEventListener('click', () => {
   const trigger = document.querySelector(`.item-name[data-toggle="${cat}"]`);
   if (trigger && !trigger.classList.contains('expanded')) trigger.click();
   markLoggedToday();
-  showLogFeedback(amt);
+  showLogFeedback(amt, cat);
 });
 $('qa-amt').addEventListener('keydown', e => { if (e.key === 'Enter') $('qa-add').click(); });
 $('qa-date').value = localDateStr();
@@ -1459,7 +1502,7 @@ function showToast(msg) {
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
 }
-function showLogFeedback(amt) {
+function showLogFeedback(amt, itemId) {
   const income = parseFloat($('income').value) || 0;
   let spent = 0;
   Object.keys(currentData.items || {}).forEach(id => {
@@ -1479,6 +1522,16 @@ function showLogFeedback(amt) {
   }
   const s = computeStreak();
   if (s > 1) msg += ` · 🔥 ${s} days`;
+  // Warn immediately if this log pushed its category over budget
+  if (itemId && currentData.items[itemId]) {
+    const rec = currentData.items[itemId];
+    const budget = parseFloat(rec.budget) || 0;
+    const actual = parseFloat(rec.actual) || 0;
+    if (budget > 0 && actual > budget + 0.5) {
+      const item = findItem(itemId);
+      msg += ` · ⚠ ${item ? item.label : 'Category'} over budget by ${fmtMoney(actual - budget)}`;
+    }
+  }
   showToast(msg);
 }
 $('no-spend-btn').addEventListener('click', () => {
@@ -1640,7 +1693,7 @@ function renderDebts() {
         <div class="debt-card-head">
           <div>
             <h3>${escapeHtml(d.name)} ${isPaid ? '<span style="font-family: var(--mono); font-size: 11px; color: var(--good); margin-left: 8px;">PAID OFF</span>' : ''}</h3>
-            <div class="meta">${debtTypeLabel(d.type)}${d.rate ? ` · ${d.rate}% APR` : ''}${promoNote}</div>
+            <div class="meta">${debtTypeLabel(d.type)}${d.rate ? ` · ${d.rate}% APR` : ''}${d.dueDay ? ` · Due day ${d.dueDay}` : ''}${promoNote}</div>
           </div>
           <div class="debt-card-actions">
             <button class="icon-btn" data-edit-debt="${d.id}">Edit</button>
@@ -1691,6 +1744,73 @@ function updateDebtTotals() {
   $('debt-monthly').textContent = fmtMoney(totalMonthly);
   $('debt-paid').textContent = fmtMoney(totalPaid);
   $('debt-paid-pct').textContent = totalOriginal > 0 ? `${((totalPaid / totalOriginal) * 100).toFixed(0)}% of total` : '—';
+  renderPayoffPlan();
+}
+
+// =====================================================
+// PAYOFF PLANNER — avalanche method + due dates
+// =====================================================
+// A debt's effective rate is 0 while a 0% promo is still running.
+function effectiveRate(d) {
+  if (d.promoEndDate) {
+    const promoDate = new Date(d.promoEndDate + 'T00:00:00');
+    if (promoDate > new Date()) return 0;
+  }
+  return parseFloat(d.rate) || 0;
+}
+// Next calendar due date for a debt with a dueDay set, or null.
+function nextDueDate(dueDay) {
+  const day = parseInt(dueDay, 10);
+  if (!day || day < 1) return null;
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  let y = now.getFullYear(), m = now.getMonth();
+  const clamp = (yy, mm) => Math.min(day, new Date(yy, mm + 1, 0).getDate());
+  let d = new Date(y, m, clamp(y, m));
+  if (d < now) { m += 1; if (m > 11) { m = 0; y += 1; } d = new Date(y, m, clamp(y, m)); }
+  return d;
+}
+function renderPayoffPlan() {
+  const el = $('payoff-plan');
+  if (!el) return;
+  const active = debts.filter(d => (parseFloat(d.balance) || 0) > 0);
+  if (active.length === 0) {
+    el.innerHTML = `<p style="color: var(--muted); font-size: 13px;">Add debts with a balance, interest rate, and minimum payment to get a recommended payment plan.</p>`;
+    return;
+  }
+  loadDiscInputs();
+  const extra = parseFloat(discInputs.extraDebt) || 0;
+  const totalMin = active.reduce((a, d) => a + (parseFloat(d.payment) || 0), 0);
+  const monthlyInterest = active.reduce((a, d) => a + (parseFloat(d.balance) || 0) * effectiveRate(d) / 100 / 12, 0);
+  // Avalanche: highest effective APR first (cheapest overall)
+  const sorted = [...active].sort((a, b) => effectiveRate(b) - effectiveRate(a));
+  const target = sorted[0];
+  const rows = sorted.map(d => {
+    const isTarget = d.id === target.id && extra > 0;
+    const min = parseFloat(d.payment) || 0;
+    const due = nextDueDate(d.dueDay);
+    const dueStr = due ? due.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+    const soon = due && (due - new Date()) / 86400000 <= 7;
+    return `<div class="breakdown-row">
+      <span class="lbl">${escapeHtml(d.name)} <span style="font-family: var(--mono); font-size: 10px;">(${effectiveRate(d).toFixed(1)}% APR · due ${soon ? `<strong style="color: var(--bad);">${dueStr}</strong>` : dueStr})</span></span>
+      <span class="val">${fmtMoney(min, 2)}${isTarget ? ` <span style="color: var(--good);">+ ${fmtMoney(extra)} extra</span>` : ''}</span>
+    </div>`;
+  }).join('');
+  let html = rows;
+  html += `<div class="breakdown-row" style="border-bottom: none; border-top: 1.5px solid var(--ink); margin-top: 6px; padding-top: 10px;">
+    <span class="lbl"><strong>Total to pay this month</strong></span>
+    <span class="val">${fmtMoney(totalMin + extra, 2)}</span>
+  </div>`;
+  html += `<p class="cat-meta" style="margin-top: 12px;">
+    Pay every minimum first — missing one means fees and credit damage. `;
+  if (extra > 0) {
+    html += `Your ${fmtMoney(extra)} extra goes to <strong>${escapeHtml(target.name)}</strong> (highest interest rate = fastest way out, the "avalanche" method).`;
+  } else {
+    html += `Anything beyond minimums should go to <strong>${escapeHtml(target.name)}</strong> — it has the highest interest rate. Set "Extra toward debt" in the Budget tab to build it into this plan.`;
+  }
+  html += ` Right now your debts cost about <strong>${fmtMoney(monthlyInterest)}/month in interest</strong>.</p>`;
+  const missingDue = active.filter(d => !d.dueDay).length;
+  if (missingDue > 0) html += `<p class="cat-meta" style="margin-top: 6px;">${missingDue} debt(s) have no due day set — edit them to see all due dates here.</p>`;
+  el.innerHTML = html;
 }
 let editingDebtId = null;
 function openDebtModal(id) {
@@ -1704,6 +1824,7 @@ function openDebtModal(id) {
   $('debt-balance').value = d ? (d.balance || '') : '';
   $('debt-payment').value = d ? (d.payment || '') : '';
   $('debt-promo-end').value = d ? (d.promoEndDate || '') : '';
+  $('debt-due-day').value = d ? (d.dueDay || '') : '';
   $('debt-notes').value = d ? (d.notes || '') : '';
   $('debt-modal').classList.add('open');
   setTimeout(() => $('debt-name').focus(), 50);
@@ -1715,7 +1836,7 @@ $('debt-modal').addEventListener('click', e => { if (e.target.id === 'debt-modal
 $('debt-save').addEventListener('click', () => {
   const name = $('debt-name').value.trim();
   if (!name) { $('debt-name').focus(); return; }
-  const data = { name, type: $('debt-type').value, rate: parseFloat($('debt-rate').value) || 0, original: parseFloat($('debt-original').value) || 0, balance: parseFloat($('debt-balance').value) || 0, payment: parseFloat($('debt-payment').value) || 0, promoEndDate: $('debt-promo-end').value || '', notes: $('debt-notes').value.trim() };
+  const data = { name, type: $('debt-type').value, rate: parseFloat($('debt-rate').value) || 0, original: parseFloat($('debt-original').value) || 0, balance: parseFloat($('debt-balance').value) || 0, payment: parseFloat($('debt-payment').value) || 0, promoEndDate: $('debt-promo-end').value || '', dueDay: Math.min(31, Math.max(0, parseInt($('debt-due-day').value, 10) || 0)), notes: $('debt-notes').value.trim() };
   if (editingDebtId) {
     const idx = debts.findIndex(x => x.id === editingDebtId);
     debts[idx] = { ...debts[idx], ...data };
@@ -1904,6 +2025,128 @@ $('import-file').addEventListener('change', e => {
 });
 
 $('print-btn').addEventListener('click', () => window.print());
+
+// =====================================================
+// STATEMENT IMPORT — merge statement-extracted data
+// =====================================================
+// Accepts a JSON file with this shape (typically prepared by an assistant
+// like Claude after reading your credit card / loan / bank statements):
+// {
+//   "type": "reckoning-statement",
+//   "month": "YYYY-MM",                     // optional; defaults to current month
+//   "income": 3200,                          // optional net income for that month
+//   "debts": [{                              // optional; matched to existing debts by name
+//     "name": "Chase Sapphire", "type": "credit", "rate": 24.99,
+//     "balance": 4200.55, "minPayment": 120, "dueDay": 15, "original": 5000
+//   }],
+//   "transactions": [{                       // optional expenses for that month
+//     "date": "YYYY-MM-DD", "desc": "Safeway", "amount": 54.20, "category": "Groceries"
+//   }]
+// }
+// Unlike the full Import, this MERGES: debts are updated in place (matched
+// by name, case-insensitive) or added; transactions are appended with
+// duplicate detection; nothing else is touched.
+$('stmt-import-btn').addEventListener('click', () => $('stmt-file').click());
+$('stmt-file').addEventListener('change', e => {
+  const file = e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      if (data.type !== 'reckoning-statement') {
+        alert('This is not a statement-data file. For full backups, use the Import button instead.');
+        return;
+      }
+      const mkey = /^\d{4}-\d{2}$/.test(data.month || '') ? data.month : monthKey(new Date());
+      const nDebts = (data.debts || []).length;
+      const nTx = (data.transactions || []).length;
+      if (!confirm(`Import statement data into ${monthLabel(mkey)}?\n\n· ${nDebts} debt account(s) to update/add\n· ${nTx} transaction(s) to add${data.income ? `\n· Set month income to ${fmtMoney(data.income)}` : ''}\n\nExisting data is merged, not replaced.`)) return;
+
+      // ---- Debts: update by name match, else add ----
+      let debtsUpdated = 0, debtsAdded = 0;
+      (data.debts || []).forEach(sd => {
+        if (!sd || !sd.name) return;
+        const match = debts.find(x => (x.name || '').trim().toLowerCase() === sd.name.trim().toLowerCase());
+        const min = parseFloat(sd.minPayment !== undefined ? sd.minPayment : sd.payment) || 0;
+        if (match) {
+          if (sd.balance !== undefined) match.balance = parseFloat(sd.balance) || 0;
+          if (sd.rate !== undefined) match.rate = parseFloat(sd.rate) || 0;
+          if (min) match.payment = min;
+          if (sd.dueDay) match.dueDay = Math.min(31, Math.max(1, parseInt(sd.dueDay, 10) || 0));
+          debtsUpdated++;
+        } else {
+          debts.push({
+            id: uid(), createdAt: new Date().toISOString(), payments: [],
+            name: sd.name.trim(), type: sd.type || 'other',
+            rate: parseFloat(sd.rate) || 0,
+            original: parseFloat(sd.original !== undefined ? sd.original : sd.balance) || 0,
+            balance: parseFloat(sd.balance) || 0,
+            payment: min,
+            dueDay: Math.min(31, Math.max(0, parseInt(sd.dueDay, 10) || 0)),
+            promoEndDate: sd.promoEndDate || '', notes: 'Imported from statement',
+          });
+          debtsAdded++;
+        }
+      });
+      if (debtsUpdated + debtsAdded > 0) saveDebts();
+
+      // ---- Month data: income + transactions ----
+      const storageKey = KEYS.monthPrefix + mkey;
+      let md = null;
+      try { const raw = localStorage.getItem(storageKey); if (raw) md = JSON.parse(raw); } catch (err) {}
+      if (!md) md = blankMonthData();
+      if (!md.items) md.items = {};
+      if (data.income && !(md.paychecks || []).length) md.income = parseFloat(data.income) || md.income;
+
+      const learnedMap = buildLearnedMap();
+      const labelToId = {};
+      CATS.forEach(g => g.items.forEach(i => { labelToId[i.label.trim().toLowerCase()] = i.id; }));
+      let txAdded = 0, txDup = 0, txFallback = 0;
+      (data.transactions || []).forEach(t => {
+        if (!t) return;
+        const amount = Math.abs(parseFloat(t.amount) || 0);
+        if (!amount) return;
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(t.date || '') ? t.date : mkey + '-01';
+        const desc = (t.desc || '').trim();
+        // Duplicate check: same date + desc + amount anywhere in this month
+        const isDup = Object.keys(md.items).some(id =>
+          (md.items[id].transactions || []).some(x =>
+            x.date === date && (x.desc || '') === desc && Math.abs((parseFloat(x.amount) || 0) - amount) < 0.005));
+        if (isDup) { txDup++; return; }
+        let itemId = t.category ? labelToId[t.category.trim().toLowerCase()] : null;
+        if (!itemId) {
+          const cat = autoCategorize(desc, learnedMap);
+          if (!cat) return;
+          if (cat.how === 'fallback') txFallback++;
+          itemId = cat.itemId;
+        }
+        if (!md.items[itemId]) md.items[itemId] = { budget: 0, actual: 0, transactions: [] };
+        if (!md.items[itemId].transactions) md.items[itemId].transactions = [];
+        md.items[itemId].transactions.push({ id: uid(), date, desc, amount, imported: true });
+        md.items[itemId].actual = md.items[itemId].transactions.reduce((a, x) => a + (parseFloat(x.amount) || 0), 0);
+        txAdded++;
+      });
+      md.savedAt = new Date().toISOString();
+      localStorage.setItem(storageKey, JSON.stringify(md));
+      if (mkey === monthSel.value) loadMonthData();
+      renderDebts();
+
+      let msg = `Statement import into ${monthLabel(mkey)} complete.`;
+      if (debtsUpdated) msg += `\n${debtsUpdated} debt(s) updated.`;
+      if (debtsAdded) msg += `\n${debtsAdded} debt(s) added.`;
+      msg += `\n${txAdded} transaction(s) added.`;
+      if (txDup) msg += `\n${txDup} skipped as duplicates.`;
+      if (txFallback) msg += `\n${txFallback} went to Misc/first category — recheck them.`;
+      msg += `\n\nCheck the Debts tab for your updated payment plan.`;
+      alert(msg);
+    } catch (err) {
+      console.error('Statement import error:', err);
+      alert('Could not read that statement-data file.');
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+});
 
 // =====================================================
 // WELCOME / SETUP
