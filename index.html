@@ -307,6 +307,7 @@
     <button class="tab" data-tab="goals">Goals <span class="count" id="goal-count">0</span></button>
     <button class="tab" data-tab="networth">Net worth</button>
     <button class="tab" data-tab="budget">Budget</button>
+    <button class="tab" data-tab="compare">Compare</button>
   </nav>
 
   <div class="top-bar">
@@ -514,6 +515,27 @@
       </div>
       <div id="forecast-grid" style="margin-top: 14px;"></div>
     </div>
+  </div>
+
+  <div class="view" id="view-compare">
+    <div class="top-bar" style="border-bottom: 0.5px solid var(--rule); margin-bottom: 24px;">
+      <div class="top-bar-left">
+        <select class="month-select" id="cmp-month"></select>
+        <span class="cat-meta" id="cmp-vs" style="margin: 0;"></span>
+      </div>
+    </div>
+
+    <div class="summary-grid" style="grid-template-columns: repeat(3, 1fr);">
+      <div class="summary-cell"><div class="label" id="cmp-prev-label">Prior month</div><div class="value" id="cmp-prev-total">$0</div><div class="sub">Total spent</div></div>
+      <div class="summary-cell spent"><div class="label" id="cmp-cur-label">This month</div><div class="value" id="cmp-cur-total">$0</div><div class="sub">Total spent</div></div>
+      <div class="summary-cell" id="cmp-change-cell"><div class="label">Change</div><div class="value" id="cmp-change">—</div><div class="sub" id="cmp-change-sub">vs. prior</div></div>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+      <h2 style="font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 26px;">Biggest movers</h2>
+      <span class="cat-meta" style="margin: 0;">Sorted by change · red = up, green = down</span>
+    </div>
+    <div id="cmp-rows"></div>
   </div>
 
   <div class="footer-note">Data lives in your browser · Sync to Google Drive for backup · No tracking</div>
@@ -903,6 +925,7 @@ document.querySelectorAll('.tab').forEach(btn => {
     if (target === 'goals') renderGoals();
     if (target === 'networth') renderAssets();
     if (target === 'budget') { renderBudgetView(); initDiscretionaryPanel(); }
+    if (target === 'compare') renderCompare();
   });
 });
 
@@ -3578,6 +3601,126 @@ $('sb-save').addEventListener('click', () => {
 });
 
 $('bud-range').addEventListener('change', renderBudgetView);
+
+// =====================================================
+// COMPARE TAB — month-over-month spending by category item
+// =====================================================
+// Reuses readMonth(), CATS, findItem(), findGroupOfItem(), fmtMoney(),
+// monthLabel(), escapeHtml() already defined above.
+
+// Per-item actual for a given month's data (transactions win over typed actual).
+function cmpItemActual(monthData, itemId) {
+  const rec = monthData && monthData.items && monthData.items[itemId];
+  if (!rec) return 0;
+  const txs = rec.transactions || [];
+  if (txs.length > 0) return txs.reduce((a, t) => a + (parseFloat(t.amount) || 0), 0);
+  return parseFloat(rec.actual) || 0;
+}
+
+// Find the most recent month BEFORE `key` that has any logged spending.
+function cmpPrevMonthWithData(key) {
+  const [y, m] = key.split('-').map(Number);
+  for (let i = 1; i <= 24; i++) {
+    const d = new Date(y, m - 1 - i, 1);
+    const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const data = readMonth(k);
+    if (data && data.items && Object.keys(data.items).some(id => cmpItemActual(data, id) > 0)) return k;
+  }
+  return null;
+}
+
+// Populate the month picker with every month that has saved data, newest first.
+function cmpBuildMonthPicker() {
+  const sel = $('cmp-month');
+  const keys = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(KEYS.monthPrefix)) keys.push(k.replace(KEYS.monthPrefix, ''));
+  }
+  keys.sort().reverse();
+  sel.innerHTML = keys.map(k => `<option value="${k}">${monthLabel(k)}</option>`).join('');
+  // Default to the month selected on the Monthly tab if it has data, else newest.
+  if (keys.includes(monthSel.value)) sel.value = monthSel.value;
+}
+
+function renderCompare() {
+  cmpBuildMonthPicker();
+  const curKey = $('cmp-month').value;
+  if (!curKey) {
+    $('cmp-rows').innerHTML = `<div class="empty-state"><h3>No months logged yet</h3><p>Log some expenses first, then come back to compare month to month.</p></div>`;
+    $('cmp-vs').textContent = '';
+    return;
+  }
+  const prevKey = cmpPrevMonthWithData(curKey);
+  const curData = readMonth(curKey);
+  const prevData = prevKey ? readMonth(prevKey) : null;
+
+  $('cmp-cur-label').textContent = monthLabel(curKey);
+  $('cmp-prev-label').textContent = prevKey ? monthLabel(prevKey) : 'Prior month';
+  $('cmp-vs').textContent = prevKey ? `vs. ${monthLabel(prevKey)}` : 'No earlier month with data to compare';
+
+  // Build rows across every item that has a value in either month.
+  const ids = new Set();
+  CATS.forEach(g => g.items.forEach(i => {
+    if (cmpItemActual(curData, i.id) > 0 || (prevData && cmpItemActual(prevData, i.id) > 0)) ids.add(i.id);
+  }));
+
+  const rows = [...ids].map(id => {
+    const item = findItem(id);
+    const grp = findGroupOfItem(id);
+    const cur = cmpItemActual(curData, id);
+    const prev = prevData ? cmpItemActual(prevData, id) : 0;
+    return { label: item ? item.label : id, group: grp ? grp.name : '', cur, prev, delta: cur - prev };
+  }).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  const totCur = rows.reduce((s, r) => s + r.cur, 0);
+  const totPrev = rows.reduce((s, r) => s + r.prev, 0);
+  const totDelta = totCur - totPrev;
+  const maxAbs = Math.max(1, ...rows.map(r => Math.abs(r.delta)));
+
+  $('cmp-cur-total').textContent = fmtMoney(totCur);
+  $('cmp-prev-total').textContent = fmtMoney(totPrev);
+  if (prevKey) {
+    $('cmp-change').textContent = (totDelta >= 0 ? '+' : '−') + fmtMoney(Math.abs(totDelta)).slice(1);
+    $('cmp-change-sub').textContent = totDelta > 0 ? 'More than prior' : totDelta < 0 ? 'Less than prior' : 'Same as prior';
+    const cell = $('cmp-change-cell');
+    cell.classList.toggle('spent', totDelta > 0);
+    cell.classList.toggle('remain', totDelta < 0);
+  } else {
+    $('cmp-change').textContent = '—';
+    $('cmp-change-sub').textContent = 'No prior month';
+  }
+
+  if (rows.length === 0) {
+    $('cmp-rows').innerHTML = `<p style="color: var(--muted); font-size: 13px;">No spending logged in ${escapeHtml(monthLabel(curKey))} yet.</p>`;
+    return;
+  }
+
+  $('cmp-rows').innerHTML = rows.map(r => {
+    const up = r.delta > 0.005, down = r.delta < -0.005;
+    const deltaStr = (up ? '▲ ' : down ? '▼ ' : '') + (Math.abs(r.delta) < 0.005 ? '—' : fmtMoney(Math.abs(r.delta)));
+    const deltaColor = up ? 'var(--bad)' : down ? 'var(--good)' : 'var(--muted)';
+    const barLeft = r.delta >= 0 ? 50 : 50 - (Math.abs(r.delta) / maxAbs) * 50;
+    const barW = (Math.abs(r.delta) / maxAbs) * 50;
+    const barColor = up ? 'var(--bad)' : 'var(--good)';
+    return `<div style="display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: center; padding: 12px 0; border-bottom: 0.5px solid var(--rule);">
+      <div style="min-width: 0;">
+        <div style="font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(r.label)}</div>
+        <div class="cat-meta" style="margin: 2px 0 0;">${escapeHtml(r.group)}</div>
+        <div style="height: 4px; background: var(--paper-2); margin-top: 7px; position: relative; overflow: hidden;">
+          <div style="position: absolute; top: 0; bottom: 0; left: ${barLeft}%; width: ${barW}%; background: ${barColor}; opacity: 0.5;"></div>
+          <div style="position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--rule-strong);"></div>
+        </div>
+      </div>
+      <div style="text-align: right; min-width: 150px;">
+        <div style="font-family: var(--mono); font-size: 14px; font-weight: 500;">${fmtMoney(r.cur, 2)}</div>
+        <div style="font-family: var(--mono); font-size: 12px; margin-top: 2px; color: ${deltaColor};">${deltaStr}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+$('cmp-month').addEventListener('change', renderCompare);
 
 // =====================================================
 // INIT
