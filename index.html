@@ -112,10 +112,37 @@
   .qa-chip.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
   .streak-badge { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11px; color: var(--good); margin-top: 6px; letter-spacing: 0.08em; }
   .streak-badge.cold { color: var(--muted); }
+
+  /* Smart entry: one big box — sign decides money in vs money out */
+  .qs-wrap { margin-bottom: 6px; }
+  .qs-row { display: flex; gap: 8px; align-items: stretch; }
+  .qs-input { flex: 1; min-width: 0; font-family: var(--mono); font-size: 26px; padding: 16px 18px; background: #fff; border: 1px solid var(--rule); color: var(--ink); }
+  .qs-input:focus { outline: none; border-color: var(--ink); }
+  .qs-input::placeholder { font-size: 14px; color: var(--muted); letter-spacing: 0.03em; }
+  .qs-input.shake { animation: qsShake 0.28s; border-color: var(--bad); }
+  @keyframes qsShake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
+  .qs-go { font-family: var(--mono); font-size: 13px; text-transform: uppercase; letter-spacing: 0.1em; background: var(--ink); color: var(--paper); border: none; cursor: pointer; padding: 0 26px; }
+  .qs-go:hover { background: var(--accent); }
+  .qs-hint { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 8px; letter-spacing: 0.04em; line-height: 1.6; }
+  .qs-ask { display: none; margin-top: 12px; padding: 14px 16px; background: #fff; border: 1px solid var(--ink); }
+  .qs-ask.open { display: block; }
+  .qs-ask h4 { font-family: var(--serif); font-size: 19px; font-weight: 400; margin-bottom: 10px; }
+  .qs-ask-input { width: 100%; font-family: var(--mono); font-size: 17px; padding: 11px 12px; border: 0.5px solid var(--rule); background: var(--paper-2); color: var(--ink); }
+  .qs-ask-input:focus { outline: none; border-color: var(--ink); }
+  .qs-last { display: none; margin-top: 12px; padding: 11px 14px; background: #fff; border-left: 3px solid var(--good); font-family: var(--mono); font-size: 12px; align-items: center; gap: 10px; flex-wrap: wrap; line-height: 1.6; }
+  .qs-last.open { display: flex; }
+  .qs-last.income { border-left-color: var(--accent); }
+  .qs-last select { font-family: var(--mono); font-size: 12px; background: var(--paper-2); border: 0.5px solid var(--rule); padding: 5px 8px; color: var(--ink); max-width: 200px; }
+  .qs-undo { font-family: var(--mono); font-size: 11px; background: none; border: 0.5px solid var(--rule); color: var(--muted); cursor: pointer; padding: 4px 10px; letter-spacing: 0.06em; }
+  .qs-undo:hover { border-color: var(--bad); color: var(--bad); }
+  .qs-toggle { font-family: var(--mono); font-size: 11px; color: var(--muted); background: none; border: none; cursor: pointer; text-decoration: underline; padding: 6px 0 0; letter-spacing: 0.05em; }
   .log-toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(20px); background: var(--ink); color: var(--paper); font-family: var(--mono); font-size: 12px; padding: 12px 18px; border-radius: 4px; opacity: 0; pointer-events: none; transition: all 0.25s ease; z-index: 300; max-width: 90vw; text-align: center; line-height: 1.5; }
   .log-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   @media (max-width: 640px) {
     #qa-amt { font-size: 22px; padding: 12px; }
+    .qs-input { font-size: 22px; padding: 14px; }
+    .qs-go { padding: 0 16px; }
+    .qs-last select { max-width: 100%; }
     #qa-add { font-size: 14px; padding: 12px 16px; }
     .qa-chip { font-size: 13px; padding: 9px 14px; }
     .quick-add-form { grid-template-columns: 1fr; }
@@ -359,14 +386,30 @@
         </div>
       </div>
       <input type="file" id="csv-file" accept=".csv,text/csv" style="display:none" />
-      <div class="qa-chips" id="qa-chips"></div>
-      <div class="quick-add-form">
-        <input type="date" id="qa-date" />
-        <input type="text" id="qa-desc" placeholder="Description (e.g., Trader Joe's)" />
-        <select id="qa-cat"></select>
-        <div style="display: flex; gap: 6px;">
-          <input type="number" id="qa-amt" placeholder="Amount" step="0.01" style="flex: 1; min-width: 0;" />
-          <button id="qa-add">Add</button>
+      <div class="qs-wrap">
+        <div class="qs-row">
+          <input type="text" id="qs-input" class="qs-input" autocomplete="off" placeholder="-60 fuel     +2960 salary     -450 mohela" />
+          <button class="qs-go" id="qs-go">Log</button>
+        </div>
+        <div class="qs-hint">Minus is money out, plus is money in. Add a word or two and it files itself. Debt names pay down the balance.</div>
+        <div class="qs-ask" id="qs-ask">
+          <h4 id="qs-ask-title">What was this for?</h4>
+          <div class="qa-chips" id="qs-ask-chips"></div>
+          <input type="text" id="qs-ask-input" class="qs-ask-input" autocomplete="off" placeholder="e.g., fuel, groceries, mohela" />
+        </div>
+        <div class="qs-last" id="qs-last"></div>
+      </div>
+      <button class="qs-toggle" id="qa-toggle">Detailed entry (set the date and category yourself)</button>
+      <div id="qa-detailed" style="display: none; margin-top: 12px;">
+        <div class="qa-chips" id="qa-chips"></div>
+        <div class="quick-add-form">
+          <input type="date" id="qa-date" />
+          <input type="text" id="qa-desc" placeholder="Description (e.g., Trader Joe's)" />
+          <select id="qa-cat"></select>
+          <div style="display: flex; gap: 6px;">
+            <input type="number" id="qa-amt" placeholder="Amount" step="0.01" style="flex: 1; min-width: 0;" />
+            <button id="qa-add">Add</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1587,6 +1630,7 @@ function buildQaChips() {
     const b = document.createElement('button');
     b.className = 'qa-chip';
     b.textContent = item.label;
+    b.dataset.itemId = item.id;
     b.addEventListener('click', () => {
       $('qa-cat').value = item.id;
       wrap.querySelectorAll('.qa-chip').forEach(c => c.classList.remove('active'));
@@ -1596,6 +1640,277 @@ function buildQaChips() {
     wrap.appendChild(b);
   });
 }
+// =====================================================
+// SMART ENTRY: type an amount, it files itself
+//   "-60 fuel"     -> expense, auto-categorized
+//   "+2960 salary" -> income, added as a paycheck
+//   "-450 mohela"  -> expense AND pays down the matching debt
+// =====================================================
+let qsPending = null;   // amount waiting on a description
+let qsLast = null;      // last thing logged, so it can be re-filed or undone
+
+const QS_INCOME_WORDS = ['salary', 'paycheck', 'pay check', 'payroll', 'bonus', 'refund', 'reimburse', 'deposit', 'income', 'interest', 'dividend', 'cashback', 'cash back'];
+
+function parseSmartEntry(raw) {
+  const str = (raw || '').trim();
+  if (!str) return null;
+  const m = str.match(/([+-])?\s*\$?\s*(\d[\d,]*(?:\.\d+)?)/);
+  if (!m) return { amount: null, sign: null, desc: str };
+  const sign = m[1] || null;
+  const amount = parseFloat(m[2].replace(/,/g, ''));
+  let desc = (str.slice(0, m.index) + ' ' + str.slice(m.index + m[0].length)).replace(/\s+/g, ' ').trim();
+  desc = desc.replace(/^[\s\-+.,:;·]+/, '').replace(/[\s\-+.,:;·]+$/, '').trim();
+  return { amount: (amount > 0 ? amount : null), sign, desc };
+}
+
+// Does this description name one of your debts? Then the payment should reduce it.
+function matchDebtByDesc(desc) {
+  const d = (desc || '').toLowerCase().trim();
+  if (!d || typeof debts === 'undefined') return null;
+  let best = null;
+  debts.forEach(dbt => {
+    const name = (dbt.name || '').toLowerCase().trim();
+    if (!name) return;
+    const words = name.split(/[^a-z0-9]+/).filter(w => w.length >= 4);
+    const hit = d.includes(name) || name.includes(d) || words.some(w => d.includes(w));
+    if (hit && (!best || name.length > (best.name || '').length)) best = dbt;
+  });
+  return best;
+}
+
+// Your most-used categories, for the one-tap prompt
+function qsTopItems(n) {
+  const counts = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith(KEYS.monthPrefix)) continue;
+    try {
+      const data = JSON.parse(localStorage.getItem(k));
+      Object.keys(data.items || {}).forEach(id => {
+        counts[id] = (counts[id] || 0) + ((data.items[id].transactions || []).length);
+      });
+    } catch (e) {}
+  }
+  const valid = [];
+  CATS.forEach(g => g.items.forEach(i => valid.push(i)));
+  return valid.map(i => ({ id: i.id, label: i.label, n: counts[i.id] || 0 }))
+    .sort((a, b) => b.n - a.n).slice(0, n);
+}
+
+function qsShake() {
+  const el = $('qs-input');
+  el.classList.remove('shake');
+  void el.offsetWidth;
+  el.classList.add('shake');
+  el.focus();
+}
+
+function qsHideAsk() { qsPending = null; $('qs-ask').classList.remove('open'); }
+
+function qsAskWhatFor(amount) {
+  qsPending = { amount };
+  $('qs-ask-title').textContent = fmtMoney(amount, 2) + ' — what was this for?';
+  const wrap = $('qs-ask-chips');
+  wrap.innerHTML = '';
+  qsTopItems(8).forEach(item => {
+    const b = document.createElement('button');
+    b.className = 'qa-chip';
+    b.textContent = item.label;
+    b.addEventListener('click', () => qsFinalize(amount, item.label, false, item.id));
+    wrap.appendChild(b);
+  });
+  $('qs-ask').classList.add('open');
+  $('qs-ask-input').value = '';
+  $('qs-ask-input').focus();
+}
+
+function qsSubmit() {
+  const p = parseSmartEntry($('qs-input').value);
+  if (!p || !p.amount) { qsShake(); return; }
+  let isIncome = p.sign === '+';
+  // No sign, but it clearly reads like money coming in
+  if (!p.sign && p.desc) {
+    const d = p.desc.toLowerCase();
+    if (QS_INCOME_WORDS.some(w => d.includes(w))) isIncome = true;
+  }
+  $('qs-input').value = '';
+  if (!p.desc && !isIncome) { qsAskWhatFor(p.amount); return; }
+  qsFinalize(p.amount, p.desc, isIncome, null);
+}
+
+function qsFinalize(amount, desc, isIncome, forcedItemId) {
+  qsHideAsk();
+  const date = ($('qa-date') && $('qa-date').value) || localDateStr();
+
+  // ---- money in: goes on as a paycheck, which drives Net monthly income ----
+  if (isIncome) {
+    if (!currentData.paychecks) currentData.paychecks = [];
+    const pc = { id: uid(), date: date, amount: amount, desc: desc || 'Income' };
+    currentData.paychecks.push(pc);
+    renderPaychecks();
+    saveMonthData();
+    qsLast = { kind: 'income', payId: pc.id, amount: amount };
+    qsRenderLast('Income +' + fmtMoney(amount, 2) + (desc ? ' · ' + desc : '') +
+      ' · income for ' + monthLabel(monthSel.value) + ' is now ' + fmtMoney(currentData.income || 0));
+    markLoggedToday();
+    $('qs-input').focus();
+    return;
+  }
+
+  // ---- money out: category first ----
+  const dbtEarly = matchDebtByDesc(desc);
+  let itemId = forcedItemId || null;
+  let how = forcedItemId ? 'picked' : '';
+  if (!itemId) {
+    const activeChip = document.querySelector('#qa-chips .qa-chip.active');
+    if (activeChip && activeChip.dataset.itemId) { itemId = activeChip.dataset.itemId; how = 'picked'; }
+  }
+  if (!itemId) {
+    const learned = buildLearnedMap();
+    // A named debt payment belongs in a debt/loan category if you have one
+    if (dbtEarly && !learned[(desc || '').toLowerCase()]) {
+      for (const g of CATS) {
+        for (const i of g.items) {
+          const l = i.label.toLowerCase();
+          if (l.includes('loan') || l.includes('debt') || l.includes('credit card') || l.includes('card payment')) { itemId = i.id; how = 'keyword'; break; }
+        }
+        if (itemId) break;
+      }
+    }
+    if (!itemId) {
+      const guess = autoCategorize(desc, learned);
+      if (guess) { itemId = guess.itemId; how = guess.how; }
+    }
+  }
+  if (!itemId) { alert('Add at least one category first.'); return; }
+
+  const tx = { id: uid(), date: date, desc: desc, amount: amount };
+  addTransaction(itemId, tx);
+  const landed = ((currentData.items[itemId] || {}).transactions || []).some(t => t.id === tx.id);
+  if (!landed) return;  // user declined the wrong-month prompt
+
+  // ---- if it names a debt, pay the debt down too ----
+  const dbt = dbtEarly;
+  let note = '';
+  if (dbt) {
+    dbt.balance = Math.max(0, (parseFloat(dbt.balance) || 0) - amount);
+    dbt.payments = dbt.payments || [];
+    dbt.payments.push({ id: tx.id, date: date, desc: desc, amount: amount });
+    saveDebts();
+    if (typeof renderDebts === 'function') renderDebts();
+    note = ' · ' + dbt.name + ' balance now ' + fmtMoney(dbt.balance);
+  }
+
+  qsLast = { kind: 'expense', itemId: itemId, txId: tx.id, debtId: dbt ? dbt.id : null, amount: amount, desc: desc };
+  qsRenderLast('Logged ' + fmtMoney(amount, 2) + (desc ? ' · ' + desc : '') + note, how);
+  markLoggedToday();
+  showLogFeedback(amount, itemId);
+  $('qs-input').focus();
+}
+
+function qsRenderLast(msg, how) {
+  const el = $('qs-last');
+  if (!el || !qsLast) return;
+  el.innerHTML = '';
+  el.classList.toggle('income', qsLast.kind === 'income');
+
+  const text = document.createElement('span');
+  text.textContent = msg;
+  el.appendChild(text);
+
+  if (qsLast.kind === 'expense') {
+    const filed = document.createElement('span');
+    filed.style.color = 'var(--muted)';
+    filed.textContent = (how === 'picked' ? 'filed under' : 'auto-filed under');
+    el.appendChild(filed);
+
+    const sel = document.createElement('select');
+    CATS.forEach(g => {
+      if (!g.items.length) return;
+      const og = document.createElement('optgroup');
+      og.label = g.name;
+      g.items.forEach(i => {
+        const o = document.createElement('option');
+        o.value = i.id; o.textContent = i.label;
+        if (i.id === qsLast.itemId) o.selected = true;
+        og.appendChild(o);
+      });
+      sel.appendChild(og);
+    });
+    sel.addEventListener('change', () => qsRefile(sel.value));
+    el.appendChild(sel);
+  }
+
+  const undo = document.createElement('button');
+  undo.className = 'qs-undo';
+  undo.textContent = 'Undo';
+  undo.addEventListener('click', qsUndo);
+  el.appendChild(undo);
+
+  el.classList.add('open');
+}
+
+// Re-file the last expense into a different category. The app remembers the
+// correction, so the same description lands there by itself next time.
+function qsRefile(newItemId) {
+  if (!qsLast || qsLast.kind !== 'expense' || newItemId === qsLast.itemId) return;
+  const old = qsLast.itemId;
+  const txs = (currentData.items[old] || {}).transactions || [];
+  const tx = txs.find(t => t.id === qsLast.txId);
+  if (!tx) return;
+  currentData.items[old].transactions = txs.filter(t => t.id !== qsLast.txId);
+  recomputeActual(old);
+  renderTransactions(old);
+  if (!currentData.items[newItemId]) currentData.items[newItemId] = { budget: 0, actual: 0, transactions: [] };
+  if (!currentData.items[newItemId].transactions) currentData.items[newItemId].transactions = [];
+  currentData.items[newItemId].transactions.push(tx);
+  recomputeActual(newItemId);
+  renderTransactions(newItemId);
+  saveMonthData();
+  qsLast.itemId = newItemId;
+  const item = findItem(newItemId);
+  showToast('Moved to ' + (item ? item.label : 'category') + ' — remembered for next time');
+}
+
+function qsUndo() {
+  if (!qsLast) return;
+  if (qsLast.kind === 'income') {
+    currentData.paychecks = (currentData.paychecks || []).filter(p => p.id !== qsLast.payId);
+    renderPaychecks();
+    saveMonthData();
+  } else {
+    deleteTransaction(qsLast.itemId, qsLast.txId);
+    if (qsLast.debtId && typeof debts !== 'undefined') {
+      const d = debts.find(x => x.id === qsLast.debtId);
+      if (d) {
+        d.balance = (parseFloat(d.balance) || 0) + qsLast.amount;
+        d.payments = (d.payments || []).filter(p => p.id !== qsLast.txId);
+        saveDebts();
+        if (typeof renderDebts === 'function') renderDebts();
+      }
+    }
+  }
+  qsLast = null;
+  $('qs-last').classList.remove('open');
+  showToast('Undone');
+  $('qs-input').focus();
+}
+
+$('qs-go').addEventListener('click', qsSubmit);
+$('qs-input').addEventListener('keydown', e => { if (e.key === 'Enter') qsSubmit(); });
+$('qs-ask-input').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const v = e.target.value.trim();
+  if (!qsPending || !v) return;
+  qsFinalize(qsPending.amount, v, false, null);
+});
+$('qa-toggle').addEventListener('click', () => {
+  const box = $('qa-detailed');
+  const open = box.style.display !== 'none';
+  box.style.display = open ? 'none' : 'block';
+  $('qa-toggle').textContent = open ? 'Detailed entry (set the date and category yourself)' : 'Hide detailed entry';
+});
+
 // PWA manifest (blob URL keeps this a single file)
 (function installManifest() {
   try {
