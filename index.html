@@ -1663,10 +1663,33 @@ function parseSmartEntry(raw) {
   return { amount: (amount > 0 ? amount : null), sign, desc };
 }
 
+// Remembered description -> debt links, taught by the "pays down" dropdown
+const QS_DEBTMAP_KEY = 'reckoning_debtmap';
+function loadDebtMemory() {
+  try { return JSON.parse(localStorage.getItem(QS_DEBTMAP_KEY)) || {}; } catch (e) { return {}; }
+}
+function rememberDebtLink(desc, debtId) {
+  const k = (desc || '').toLowerCase().trim();
+  if (!k) return;
+  const m = loadDebtMemory();
+  if (debtId) m[k] = debtId; else delete m[k];
+  try { localStorage.setItem(QS_DEBTMAP_KEY, JSON.stringify(m)); } catch (e) {}
+}
+
 // Does this description name one of your debts? Then the payment should reduce it.
 function matchDebtByDesc(desc) {
   const d = (desc || '').toLowerCase().trim();
   if (!d || typeof debts === 'undefined') return null;
+  // 1. Anything you've linked by hand before wins
+  const mem = loadDebtMemory();
+  if (mem[d]) { const hit = debts.find(x => x.id === mem[d]); if (hit) return hit; }
+  for (const known in mem) {
+    if (known.length >= 4 && (d.includes(known) || known.includes(d))) {
+      const hit = debts.find(x => x.id === mem[known]);
+      if (hit) return hit;
+    }
+  }
+  // 2. Otherwise match on the debt's own name
   let best = null;
   debts.forEach(dbt => {
     const name = (dbt.name || '').toLowerCase().trim();
@@ -1791,18 +1814,18 @@ function qsFinalize(amount, desc, isIncome, forcedItemId) {
 
   // ---- if it names a debt, pay the debt down too ----
   const dbt = dbtEarly;
-  let note = '';
   if (dbt) {
     dbt.balance = Math.max(0, (parseFloat(dbt.balance) || 0) - amount);
     dbt.payments = dbt.payments || [];
     dbt.payments.push({ id: tx.id, date: date, desc: desc, amount: amount });
     saveDebts();
     if (typeof renderDebts === 'function') renderDebts();
-    note = ' · ' + dbt.name + ' balance now ' + fmtMoney(dbt.balance);
   }
 
-  qsLast = { kind: 'expense', itemId: itemId, txId: tx.id, debtId: dbt ? dbt.id : null, amount: amount, desc: desc };
-  qsRenderLast('Logged ' + fmtMoney(amount, 2) + (desc ? ' · ' + desc : '') + note, how);
+  qsLast = { kind: 'expense', itemId: itemId, txId: tx.id, debtId: dbt ? dbt.id : null,
+             amount: amount, desc: desc, date: date, how: how,
+             baseMsg: 'Logged ' + fmtMoney(amount, 2) + (desc ? ' · ' + desc : '') };
+  qsRenderLast(qsLast.baseMsg, how);
   markLoggedToday();
   showLogFeedback(amount, itemId);
   $('qs-input').focus();
@@ -1815,7 +1838,12 @@ function qsRenderLast(msg, how) {
   el.classList.toggle('income', qsLast.kind === 'income');
 
   const text = document.createElement('span');
-  text.textContent = msg;
+  let line = msg;
+  if (qsLast.kind === 'expense' && qsLast.debtId && typeof debts !== 'undefined') {
+    const d = debts.find(x => x.id === qsLast.debtId);
+    if (d) line += ' · ' + d.name + ' balance now ' + fmtMoney(d.balance);
+  }
+  text.textContent = line;
   el.appendChild(text);
 
   if (qsLast.kind === 'expense') {
@@ -1839,6 +1867,27 @@ function qsRenderLast(msg, how) {
     });
     sel.addEventListener('change', () => qsRefile(sel.value));
     el.appendChild(sel);
+
+    // Attach this payment to a debt by hand, whatever it was called
+    if (typeof debts !== 'undefined' && debts.length) {
+      const dl = document.createElement('span');
+      dl.style.color = 'var(--muted)';
+      dl.textContent = 'pays down';
+      el.appendChild(dl);
+
+      const dsel = document.createElement('select');
+      const none = document.createElement('option');
+      none.value = ''; none.textContent = '— nothing —';
+      dsel.appendChild(none);
+      debts.forEach(d => {
+        const o = document.createElement('option');
+        o.value = d.id; o.textContent = d.name;
+        if (d.id === qsLast.debtId) o.selected = true;
+        dsel.appendChild(o);
+      });
+      dsel.addEventListener('change', () => qsSetDebt(dsel.value));
+      el.appendChild(dsel);
+    }
   }
 
   const undo = document.createElement('button');
@@ -1848,6 +1897,35 @@ function qsRenderLast(msg, how) {
   el.appendChild(undo);
 
   el.classList.add('open');
+}
+
+// Point the last expense at a debt (or unhook it). Remembered for next time.
+function qsSetDebt(newId) {
+  if (!qsLast || qsLast.kind !== 'expense') return;
+  if ((qsLast.debtId || '') === (newId || '')) return;
+  if (qsLast.debtId) {
+    const od = debts.find(x => x.id === qsLast.debtId);
+    if (od) {
+      od.balance = (parseFloat(od.balance) || 0) + qsLast.amount;
+      od.payments = (od.payments || []).filter(p => p.id !== qsLast.txId);
+    }
+  }
+  let msg = 'No longer counted against a debt';
+  if (newId) {
+    const nd = debts.find(x => x.id === newId);
+    if (nd) {
+      nd.balance = Math.max(0, (parseFloat(nd.balance) || 0) - qsLast.amount);
+      nd.payments = nd.payments || [];
+      nd.payments.push({ id: qsLast.txId, date: qsLast.date, desc: qsLast.desc, amount: qsLast.amount });
+      msg = nd.name + ' balance now ' + fmtMoney(nd.balance) + ' — remembered for next time';
+    }
+  }
+  qsLast.debtId = newId || null;
+  saveDebts();
+  if (typeof renderDebts === 'function') renderDebts();
+  rememberDebtLink(qsLast.desc, newId);
+  qsRenderLast(qsLast.baseMsg, qsLast.how);
+  showToast(msg);
 }
 
 // Re-file the last expense into a different category. The app remembers the
