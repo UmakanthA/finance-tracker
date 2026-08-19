@@ -293,6 +293,15 @@
   .catchup-day button:hover { background: var(--ink); color: var(--paper); }
   .catchup-actions { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
 
+  /* Sync chip — always tells you whether this phone is holding unsaved data */
+  .sync-chip { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; padding: 5px 10px; border: 0.5px solid var(--rule); background: var(--paper-2); color: var(--muted); cursor: default; margin-right: 8px; transition: all 0.15s; }
+  .sync-chip.pending { border-color: var(--warn); color: var(--warn); background: rgba(163,89,14,0.07); cursor: pointer; }
+  .sync-chip.pending:hover { background: var(--warn); color: var(--paper); }
+  .sync-chip.conflict { border-color: var(--bad); color: var(--bad); background: rgba(139,58,26,0.07); cursor: pointer; }
+  .sync-chip.conflict:hover { background: var(--bad); color: var(--paper); }
+  .sync-chip.synced { border-color: var(--good); color: var(--good); }
+  .sync-chip.busy { border-color: var(--ink); color: var(--ink); }
+
   /* Install / reminder hint strip */
   .hint-strip { border: 0.5px solid var(--rule); background: var(--paper-2); padding: 12px 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; }
   .hint-strip .hs-text { flex: 1; min-width: 200px; }
@@ -376,6 +385,7 @@
     <input type="file" id="import-file" accept="application/json" style="display:none" />
     <input type="file" id="stmt-file" accept="application/json" style="display:none" />
     <div style="width: 100%; display: flex; justify-content: flex-end; margin-top: -8px;">
+      <button class="sync-chip" id="sync-badge" style="display:none;"></button>
       <div class="drive-status" id="drive-status"><span class="dot"></span> <span id="drive-status-text">Drive: not connected</span></div>
     </div>
   </div>
@@ -833,6 +843,39 @@ const KEYS = {
 
 const $ = id => document.getElementById(id);
 const today = new Date();
+
+// =====================================================
+// SYNC STATE — every write to reckoning_* data marks the
+// device dirty, so we always know if Drive is behind.
+// =====================================================
+const SYNC = {
+  DIRTY_KEY: 'reckoning_dirty_since',
+  CONFLICT_KEY: 'reckoning_sync_conflict',
+  LAST_SAVE_KEY: 'reckoning_last_drive_save',
+  MIN_INTERVAL_MS: 15000,   // never hammer Drive
+  IDLE_DELAY_MS: 45000,     // quiet period after you stop typing
+  AUTH_RETRY_MS: 600000,    // don't retry silent auth more than every 10 min
+};
+// Bookkeeping keys — writing these must NOT mark the device dirty
+SYNC.META = new Set([
+  SYNC.DIRTY_KEY, SYNC.CONFLICT_KEY, SYNC.LAST_SAVE_KEY,
+  'reckoning_install_hint_dismissed', 'reckoning_catchup_dismissed',
+]);
+
+// Declared here, before the storage patch below can reach markDirty(), so the
+// guard inside markDirty() reads a real value instead of hitting a TDZ error.
+let syncReady = false;
+
+// Single choke point: patch setItem so no data path can forget to mark dirty.
+(function patchStorageForSync() {
+  const orig = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = function (k, v) {
+    orig(k, v);
+    if (typeof k === 'string' && k.startsWith('reckoning_') && !SYNC.META.has(k)) {
+      try { markDirty(); } catch (e) {}
+    }
+  };
+})();
 
 function fmtMoney(n, dec = 0) {
   if (isNaN(n) || n === null) n = 0;
@@ -2199,6 +2242,13 @@ buildQaChips();
 renderCatchup();
 renderInstallHint();
 
+// Init writes are done — from here on, a write means a real change worth syncing
+setTimeout(() => {
+  syncReady = true;
+  renderSyncBadge();
+  autoSync('visible');
+}, 1500);
+
 // =====================================================
 // PAYCHECKS — track each paycheck; income = their sum
 // =====================================================
@@ -2596,7 +2646,7 @@ $('reset-btn').addEventListener('click', () => {
 });
 
 $('export-btn').addEventListener('click', () => {
-  const allData = { months: {}, debts, goals, assets, recurring, categories: CATS, exportedAt: new Date().toISOString(), version: 3 };
+  const allData = { months: {}, debts, goals, assets, recurring, categories: CATS, logDays: loadLogDays(), exportedAt: new Date().toISOString(), version: 3 };
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
     if (k && k.startsWith(KEYS.monthPrefix)) {
@@ -2624,6 +2674,7 @@ $('import-file').addEventListener('change', e => {
       if (data.goals) { goals = data.goals; localStorage.setItem(KEYS.goals, JSON.stringify(goals)); }
       if (data.assets) { assets = data.assets; localStorage.setItem(KEYS.assets, JSON.stringify(assets)); }
       if (data.recurring) { recurring = data.recurring; localStorage.setItem(KEYS.recurring, JSON.stringify(recurring)); }
+      if (data.logDays) { localStorage.setItem(LOGDAYS_KEY, JSON.stringify(data.logDays)); }
       alert('Imported successfully. Reloading…');
       location.reload();
     } catch (err) { alert('Could not read that file.'); }
@@ -2810,6 +2861,14 @@ function initDriveSync() {
     scope: DRIVE_CONFIG.SCOPES,
     callback: (tokenResponse) => {
       if (tokenResponse.error) {
+        // A failed *silent* refresh is expected and routine — don't alarm anyone,
+        // just leave the badge asking for a tap.
+        if (pendingDriveAction === 'autosave') {
+          pendingDriveAction = null;
+          updateDriveStatus('offline', 'Drive: tap to reconnect');
+          renderSyncBadge();
+          return;
+        }
         console.error('Drive auth error:', tokenResponse);
         updateDriveStatus('offline', 'Drive: auth failed');
         return;
@@ -2822,6 +2881,12 @@ function initDriveSync() {
       // I am executing the pending action if there was one
       if (pendingDriveAction === 'save') { driveSave(); }
       else if (pendingDriveAction === 'load') { driveLoad(); }
+      else if (pendingDriveAction === 'autosave') {
+        pendingDriveAction = null;
+        lastAutoSyncAttempt = 0;   // let the retry through immediately
+        autoSync('visible');
+        return;
+      }
       pendingDriveAction = null;
     },
   });
@@ -2863,7 +2928,7 @@ function updateDriveStatus(state, text) {
 function buildBackupData() {
   // I am saving current month data first so it's up to date
   saveMonthData();
-  const allData = { months: {}, debts, goals, assets, recurring, categories: CATS, exportedAt: new Date().toISOString(), version: 3 };
+  const allData = { months: {}, debts, goals, assets, recurring, categories: CATS, logDays: loadLogDays(), exportedAt: new Date().toISOString(), version: 3 };
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
     if (k && k.startsWith(KEYS.monthPrefix)) {
@@ -2885,8 +2950,10 @@ async function findBackupFile() {
 }
 
 // I am saving the backup to Google Drive
-async function driveSave() {
+async function driveSave(opts = {}) {
+  const silent = !!opts.silent;
   updateDriveStatus('syncing', 'Drive: saving…');
+  renderSyncBadge('busy');
   $('drive-save-btn').disabled = true;
 
   try {
@@ -2896,14 +2963,25 @@ async function driveSave() {
 
     if (existingFile) {
       // Overwrite protection: warn if the Drive backup is newer than this device's last local save
-      const lastLocalSave = localStorage.getItem('reckoning_last_drive_save');
+      const lastLocalSave = localStorage.getItem(SYNC.LAST_SAVE_KEY);
       if (existingFile.modifiedTime && lastLocalSave && new Date(existingFile.modifiedTime) > new Date(lastLocalSave)) {
         const driveTime = new Date(existingFile.modifiedTime).toLocaleString();
-        if (!confirm(`The backup in Google Drive was modified more recently (${driveTime}) — possibly from another device.\n\nOverwrite it with this device's data?`)) {
-          updateDriveStatus('connected', 'Drive: save cancelled');
+        if (silent) {
+          // Never silently clobber a newer backup from another device.
+          // Flag it and let the badge ask for a decision.
+          localStorage.setItem(SYNC.CONFLICT_KEY, existingFile.modifiedTime);
+          updateDriveStatus('connected', 'Drive: newer copy exists');
+          renderSyncBadge();
           $('drive-save-btn').disabled = false;
           return;
         }
+        if (!confirm(`The backup in Google Drive was modified more recently (${driveTime}) — possibly from another device.\n\nOverwrite it with this device's data?`)) {
+          updateDriveStatus('connected', 'Drive: save cancelled');
+          renderSyncBadge();
+          $('drive-save-btn').disabled = false;
+          return;
+        }
+        localStorage.removeItem(SYNC.CONFLICT_KEY);
       }
       // I am updating the existing file
       const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${existingFile.id}?uploadType=media`, {
@@ -2932,17 +3010,157 @@ async function driveSave() {
       if (!res.ok) throw new Error('Failed to create file: ' + res.status);
     }
 
-    localStorage.setItem('reckoning_last_drive_save', new Date().toISOString());
+    localStorage.setItem(SYNC.LAST_SAVE_KEY, new Date().toISOString());
+    localStorage.removeItem(SYNC.CONFLICT_KEY);
+    clearDirty();
     updateDriveStatus('connected', 'Drive: saved ✓');
     flashSaved();
   } catch (err) {
     console.error('Drive save error:', err);
+    // A dead token is the common case — drop it so the next attempt re-auths
+    if (String(err.message || '').includes('401')) driveAccessToken = null;
     updateDriveStatus('connected', 'Drive: save failed');
-    alert('Could not save to Google Drive. Check the console for details.');
+    renderSyncBadge();
+    if (!silent) alert('Could not save to Google Drive. Check the console for details.');
   } finally {
     $('drive-save-btn').disabled = false;
+    renderSyncBadge();
   }
 }
+
+// =====================================================
+// AUTO-SYNC — save to Drive without you having to think
+// about it, while never silently overwriting another
+// device's newer backup.
+// =====================================================
+let autoSyncing = false;
+let lastAutoSyncAttempt = 0;
+let lastSilentAuthAttempt = 0;
+let idleSyncTimer = null;
+
+function isDirty() { return !!localStorage.getItem(SYNC.DIRTY_KEY); }
+
+function markDirty() {
+  // The app writes to localStorage while hydrating on load. Those aren't user
+  // changes, so ignore everything until init has settled — otherwise every
+  // cold start would look like unsynced work.
+  if (!syncReady) return;
+  if (!localStorage.getItem(SYNC.DIRTY_KEY)) {
+    try { localStorage.setItem(SYNC.DIRTY_KEY, new Date().toISOString()); } catch (e) {}
+  }
+  renderSyncBadge();
+  scheduleIdleSync();
+}
+
+function clearDirty() {
+  try { localStorage.removeItem(SYNC.DIRTY_KEY); } catch (e) {}
+  renderSyncBadge();
+}
+
+function scheduleIdleSync() {
+  clearTimeout(idleSyncTimer);
+  idleSyncTimer = setTimeout(() => autoSync('idle'), SYNC.IDLE_DELAY_MS);
+}
+
+function relTime(iso) {
+  if (!iso) return '';
+  const secs = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (secs < 60) return 'just now';
+  if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+  if (secs < 86400) return Math.floor(secs / 3600) + 'h ago';
+  return Math.floor(secs / 86400) + 'd ago';
+}
+
+function renderSyncBadge(forceState) {
+  const el = $('sync-badge');
+  if (!el) return;
+  el.className = 'sync-chip';
+  el.style.display = 'inline-block';
+
+  if (forceState === 'busy' || autoSyncing) {
+    el.classList.add('busy');
+    el.textContent = '◍ Syncing…';
+    return;
+  }
+  if (localStorage.getItem(SYNC.CONFLICT_KEY)) {
+    el.classList.add('conflict');
+    el.textContent = '⚠ Drive has a newer copy — tap';
+    return;
+  }
+  if (isDirty()) {
+    const since = relTime(localStorage.getItem(SYNC.DIRTY_KEY));
+    if (!navigator.onLine) {
+      el.classList.add('pending');
+      el.textContent = `○ Offline · unsaved ${since}`;
+    } else {
+      el.classList.add('pending');
+      el.textContent = `● Unsynced ${since} — tap to save`;
+    }
+    return;
+  }
+  const last = localStorage.getItem(SYNC.LAST_SAVE_KEY);
+  if (last) {
+    el.classList.add('synced');
+    el.textContent = `✓ Synced ${relTime(last)}`;
+  } else {
+    el.textContent = '○ Not backed up yet';
+    el.classList.add('pending');
+  }
+}
+
+async function autoSync(reason) {
+  if (autoSyncing || !isDirty()) return;
+  if (!navigator.onLine) { renderSyncBadge(); return; }
+  if (localStorage.getItem(SYNC.CONFLICT_KEY)) { renderSyncBadge(); return; }
+  if (!driveTokenClient) return;
+
+  const now = Date.now();
+  if (now - lastAutoSyncAttempt < SYNC.MIN_INTERVAL_MS) return;
+  lastAutoSyncAttempt = now;
+
+  if (!driveAccessToken) {
+    // Only try a silent token grab while you're actually looking at the app —
+    // a popup can't open from a background tab anyway. If it fails, the badge
+    // stays visible and one tap does it manually.
+    if (reason !== 'visible' && reason !== 'online') { renderSyncBadge(); return; }
+    if (now - lastSilentAuthAttempt < SYNC.AUTH_RETRY_MS) { renderSyncBadge(); return; }
+    lastSilentAuthAttempt = now;
+    pendingDriveAction = 'autosave';
+    try { driveTokenClient.requestAccessToken({ prompt: '' }); } catch (e) { renderSyncBadge(); }
+    return;
+  }
+
+  autoSyncing = true;
+  renderSyncBadge('busy');
+  try { await driveSave({ silent: true }); }
+  catch (e) { console.warn('Auto-sync failed:', e); }
+  finally { autoSyncing = false; renderSyncBadge(); }
+}
+
+// Triggers: reconnect, app resume, app leave, and a quiet period after edits
+window.addEventListener('online', () => { renderSyncBadge(); autoSync('online'); });
+window.addEventListener('offline', () => renderSyncBadge());
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { renderSyncBadge(); autoSync('visible'); }
+  else { autoSync('hidden'); }
+});
+window.addEventListener('pagehide', () => { autoSync('hidden'); });
+
+// Keep the "2m ago" text honest without re-rendering constantly
+setInterval(() => { if (!autoSyncing) renderSyncBadge(); }, 60000);
+
+$('sync-badge').addEventListener('click', async () => {
+  if (localStorage.getItem(SYNC.CONFLICT_KEY)) {
+    const when = new Date(localStorage.getItem(SYNC.CONFLICT_KEY)).toLocaleString();
+    const msg = `Google Drive has a backup saved ${when} — newer than this device's last sync, probably from another device.\n\n`
+      + `OK  = overwrite Drive with what's on this phone\n`
+      + `Cancel = leave Drive alone (use "Load from Drive" to pull it down instead)`;
+    if (!confirm(msg)) return;
+    localStorage.removeItem(SYNC.CONFLICT_KEY);
+  }
+  const authed = await ensureDriveAuth('save');
+  if (authed) driveSave();
+});
 
 // I am loading the backup from Google Drive
 async function driveLoad() {
@@ -3003,7 +3221,12 @@ async function driveLoad() {
       localStorage.setItem(KEYS.recurring, JSON.stringify(recurring));
     }
 
-    localStorage.setItem('reckoning_last_drive_save', new Date().toISOString());
+    if (data.logDays) localStorage.setItem(LOGDAYS_KEY, JSON.stringify(data.logDays));
+
+    localStorage.setItem(SYNC.LAST_SAVE_KEY, new Date().toISOString());
+    localStorage.removeItem(SYNC.CONFLICT_KEY);
+    // We just pulled Drive's copy down — this device is not ahead of it
+    localStorage.removeItem(SYNC.DIRTY_KEY);
     updateDriveStatus('connected', 'Drive: loaded ✓');
     alert('Loaded from Google Drive. Reloading…');
     location.reload();
