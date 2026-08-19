@@ -6,6 +6,9 @@
 <meta name="description" content="A privacy-first personal finance tracker. No accounts, no servers, all data stays on your device." />
 <title>Reckoning — Personal Finance Tracker</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='75' font-size='80' font-family='Georgia'%3E%24%3C/text%3E%3C/svg%3E" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icon-180.png" />
+<link rel="apple-touch-icon" sizes="180x180" href="icon-180.png" />
 <meta name="theme-color" content="#faf8f3" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -277,6 +280,24 @@
   .footer-note { margin-top: 48px; padding-top: 16px; border-top: 0.5px solid var(--rule); text-align: center; font-family: var(--mono); font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); }
 
   .alert-banner { border: 1px solid var(--bad); background: rgba(139,58,26,0.06); padding: 12px 16px; margin-bottom: 20px; font-size: 13px; }
+
+  /* Catch-up banner — recover missed days without shame */
+  .catchup { border: 1px solid var(--warn); background: rgba(163,89,14,0.06); padding: 14px 16px; margin-bottom: 20px; }
+  .catchup h4 { font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 17px; margin: 0 0 2px; }
+  .catchup .sub { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .catchup-days { display: flex; flex-wrap: wrap; gap: 6px; }
+  .catchup-day { display: flex; align-items: stretch; border: 0.5px solid var(--rule); background: var(--paper); }
+  .catchup-day .cd-label { font-family: var(--mono); font-size: 11px; padding: 6px 9px; color: var(--ink); border-right: 0.5px solid var(--rule); white-space: nowrap; }
+  .catchup-day button { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; background: transparent; border: none; border-right: 0.5px solid var(--rule); padding: 6px 8px; cursor: pointer; color: var(--muted); transition: all 0.15s; }
+  .catchup-day button:last-child { border-right: none; }
+  .catchup-day button:hover { background: var(--ink); color: var(--paper); }
+  .catchup-actions { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+
+  /* Install / reminder hint strip */
+  .hint-strip { border: 0.5px solid var(--rule); background: var(--paper-2); padding: 12px 16px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; }
+  .hint-strip .hs-text { flex: 1; min-width: 200px; }
+  .hint-strip .hs-text strong { font-weight: 600; }
+  .hint-strip .hs-close { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.1em; background: transparent; border: 0.5px solid var(--rule); padding: 5px 9px; cursor: pointer; color: var(--muted); }
   .alert-banner .alert-line { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; }
   .alert-banner .alert-line .amt { font-family: var(--mono); font-weight: 500; color: var(--bad); margin-left: auto; }
 
@@ -360,6 +381,8 @@
   </div>
 
   <div class="view active" id="view-monthly">
+    <div id="install-hint" class="hint-strip" style="display:none;"></div>
+    <div id="catchup-banner" class="catchup" style="display:none;"></div>
     <div id="budget-alerts" style="display:none;" class="alert-banner"></div>
     <div class="summary-grid">
       <div class="summary-cell"><div class="label">Net income</div><div class="value" id="sum-income">$0</div><div class="sub">After taxes</div></div>
@@ -1538,6 +1561,7 @@ function markLoggedToday() {
   const t = localDateStr();
   if (!days.includes(t)) { days.push(t); days.sort(); localStorage.setItem(LOGDAYS_KEY, JSON.stringify(days.slice(-400))); }
   renderStreak();
+  try { renderCatchup(); } catch (e) {}
 }
 function computeStreak() {
   const days = new Set(loadLogDays());
@@ -1603,7 +1627,178 @@ function showLogFeedback(amt, itemId) {
 $('no-spend-btn').addEventListener('click', () => {
   markLoggedToday();
   showToast(`No-spend day logged · 🔥 ${computeStreak()}-day streak`);
+  renderCatchup();
 });
+
+// =====================================================
+// CATCH-UP — the days you missed, recoverable in one tap
+// =====================================================
+const CATCHUP_MAX_DAYS = 10;      // never shame you with more than this
+const CATCHUP_DISMISS_KEY = 'reckoning_catchup_dismissed';
+
+function markLoggedDay(dateStr) {
+  const days = loadLogDays();
+  if (!days.includes(dateStr)) {
+    days.push(dateStr); days.sort();
+    localStorage.setItem(LOGDAYS_KEY, JSON.stringify(days.slice(-400)));
+  }
+  renderStreak();
+}
+
+// Every day between the last thing you logged and yesterday that has no entry.
+function missingDays() {
+  const days = loadLogDays();
+  if (!days.length) return [];               // brand new — nothing to catch up on
+  const have = new Set(days);
+  const last = new Date(days[days.length - 1] + 'T12:00:00');
+  const yd = new Date(); yd.setDate(yd.getDate() - 1);
+  const yesterdayKey = localDateStr(yd);        // compare as date strings, not timestamps —
+  const out = [];                                // otherwise time-of-day drops yesterday
+  const d = new Date(last); d.setDate(d.getDate() + 1);
+  let guard = 0;
+  while (guard++ < 400) {
+    const key = localDateStr(d);
+    if (key > yesterdayKey) break;
+    if (!have.has(key)) out.push(key);
+    d.setDate(d.getDate() + 1);
+  }
+  return out.slice(-CATCHUP_MAX_DAYS);
+}
+
+function prettyDay(key) {
+  const d = new Date(key + 'T12:00:00');
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function jumpToDay(key) {
+  // Move the app to the right month if the missed day isn't in the visible one
+  const mk = key.slice(0, 7);
+  if (monthSel.value !== mk) {
+    const [y, m] = mk.split('-').map(Number);
+    if (yearSel.value !== String(y)) { yearSel.value = String(y); populateMonthPicker(m - 1); }
+    monthSel.value = mk;
+    loadMonthData();
+  }
+  const box = $('qa-detailed');
+  box.style.display = 'block';
+  $('qa-toggle').textContent = 'Hide detailed entry';
+  $('qa-date').value = key;
+  $('qa-desc').focus();
+  $('qa-desc').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function renderCatchup() {
+  const el = $('catchup-banner');
+  if (!el) return;
+  const missing = missingDays();
+  if (!missing.length) { el.style.display = 'none'; return; }
+
+  // If you dismissed this exact set today, stay quiet until tomorrow
+  if (localStorage.getItem(CATCHUP_DISMISS_KEY) === localDateStr()) { el.style.display = 'none'; return; }
+
+  const n = missing.length;
+  el.innerHTML = `
+    <h4>${n} day${n === 1 ? '' : 's'} unlogged</h4>
+    <div class="sub">Tap "none" for a day you spent nothing, or "log" to fill it in</div>
+    <div class="catchup-days">
+      ${missing.map(k => `
+        <div class="catchup-day">
+          <span class="cd-label">${prettyDay(k)}</span>
+          <button data-nospend="${k}">None</button>
+          <button data-log="${k}">Log</button>
+        </div>`).join('')}
+    </div>
+    <div class="catchup-actions">
+      <button class="mini-btn" id="catchup-all">Mark all ${n} as no-spend</button>
+      <button class="mini-btn" id="catchup-dismiss">Not now</button>
+    </div>`;
+  el.style.display = 'block';
+
+  el.querySelectorAll('[data-nospend]').forEach(b => b.addEventListener('click', () => {
+    markLoggedDay(b.dataset.nospend);
+    showToast(`${prettyDay(b.dataset.nospend)} marked no-spend · 🔥 ${computeStreak()}-day streak`);
+    renderCatchup();
+  }));
+  el.querySelectorAll('[data-log]').forEach(b => b.addEventListener('click', () => jumpToDay(b.dataset.log)));
+  $('catchup-all').addEventListener('click', () => {
+    missing.forEach(markLoggedDay);
+    showToast(`Caught up · 🔥 ${computeStreak()}-day streak`);
+    renderCatchup();
+  });
+  $('catchup-dismiss').addEventListener('click', () => {
+    localStorage.setItem(CATCHUP_DISMISS_KEY, localDateStr());
+    el.style.display = 'none';
+  });
+}
+
+// =====================================================
+// INSTALL HINT — only shown in a browser tab, never in the installed app
+// =====================================================
+const INSTALL_HINT_KEY = 'reckoning_install_hint_dismissed';
+let deferredInstallPrompt = null;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  renderInstallHint();
+});
+
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+
+function renderInstallHint() {
+  const el = $('install-hint');
+  if (!el) return;
+  if (isStandalone() || localStorage.getItem(INSTALL_HINT_KEY) === '1') { el.style.display = 'none'; return; }
+
+  const ua = navigator.userAgent;
+  const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  let body;
+  if (deferredInstallPrompt) {
+    body = `<div class="hs-text"><strong>Put this on your home screen.</strong> One tap to log, works offline.</div>
+            <button class="mini-btn" id="install-go">Install</button>`;
+  } else if (isIOS) {
+    body = `<div class="hs-text"><strong>Put this on your home screen.</strong> Tap the Share button below, then <em>Add to Home Screen</em>. One tap to log, works offline.</div>`;
+  } else {
+    body = `<div class="hs-text"><strong>Put this on your home screen.</strong> Your browser menu → <em>Install app</em> or <em>Add to Home screen</em>.</div>`;
+  }
+  el.innerHTML = body + `<button class="hs-close" id="install-dismiss">Dismiss</button>`;
+  el.style.display = 'flex';
+
+  const go = $('install-go');
+  if (go) go.addEventListener('click', async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    el.style.display = 'none';
+  });
+  $('install-dismiss').addEventListener('click', () => {
+    localStorage.setItem(INSTALL_HINT_KEY, '1');
+    el.style.display = 'none';
+  });
+}
+
+// =====================================================
+// HOME-SCREEN SHORTCUTS — ?action=log / ?action=nospend
+// =====================================================
+(function handleLaunchAction() {
+  const action = new URLSearchParams(location.search).get('action');
+  if (!action) return;
+  setTimeout(() => {
+    if (action === 'nospend') {
+      markLoggedToday();
+      showToast(`No-spend day logged · 🔥 ${computeStreak()}-day streak`);
+      renderCatchup();
+    } else if (action === 'log') {
+      const input = $('qs-input');
+      if (input) { input.focus(); input.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    }
+    history.replaceState({}, '', location.pathname);
+  }, 300);
+})();
 // Category chips: your 6 most-used items, one tap to select
 function buildQaChips() {
   const wrap = $('qa-chips');
@@ -1989,23 +2184,20 @@ $('qa-toggle').addEventListener('click', () => {
   $('qa-toggle').textContent = open ? 'Detailed entry (set the date and category yourself)' : 'Hide detailed entry';
 });
 
-// PWA manifest (blob URL keeps this a single file)
-(function installManifest() {
-  try {
-    const manifest = {
-      name: 'Reckoning', short_name: 'Reckoning',
-      start_url: location.origin + location.pathname,
-      display: 'standalone', background_color: '#faf8f3', theme_color: '#faf8f3',
-      icons: [{ src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23faf8f3'/%3E%3Ctext y='75' x='25' font-size='70' font-family='Georgia'%3E%24%3C/text%3E%3C/svg%3E", sizes: 'any', type: 'image/svg+xml' }]
-    };
-    const link = document.createElement('link');
-    link.rel = 'manifest';
-    link.href = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));
-    document.head.appendChild(link);
-  } catch (e) {}
+// PWA: real manifest.json is linked in <head>. Register the service worker so
+// the app is installable and works offline. Silently no-ops on file:// or
+// anywhere the browser refuses (private mode, unsupported browser).
+(function registerSW() {
+  if (!('serviceWorker' in navigator)) return;
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost') return;
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
 })();
 renderStreak();
 buildQaChips();
+renderCatchup();
+renderInstallHint();
 
 // =====================================================
 // PAYCHECKS — track each paycheck; income = their sum
